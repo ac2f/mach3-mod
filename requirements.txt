@@ -1,0 +1,9 @@
+# Cekirdek: EK KUTUPHANE GEREKMEZ.
+# Arayuz, sunucu, G-Code ayristirma ve sure tahmini yalnizca Python
+# standart kutuphanesini kullanir (Python 3.8+).
+
+# Yalnizca GERCEK Mach3 baglantisi icin (Windows):
+pywin32>=305 ; sys_platform == "win32"    # Mach3 OLE/COM otomasyonu
+
+# Testler icin (istege bagli):
+# pytest>=7.0

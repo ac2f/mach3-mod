@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Uygulama ciktilari
+ayarlar.json
+olaylar.log
+*_blok*.tap
+
+# Isletim sistemi
+.DS_Store
+Thumbs.db

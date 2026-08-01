@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mach3-kontrol"
+version = "1.0.0"
+description = "Mach3 icin guvenlik onlemli, mobil uyumlu web kontrol arayuzu: jog kilidi, yumusak limitler, kesim sirasi secimi ve sure tahmini"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Mach3-Kontrol" }]
+keywords = ["cnc", "mach3", "gcode", "jog", "guvenlik", "router"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.optional-dependencies]
+mach3 = ["pywin32>=305 ; sys_platform == 'win32'"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+mach3-kontrol = "mach3_kontrol.cli:main"
+
+[tool.setuptools]
+packages = ["mach3_kontrol"]
+
+[tool.setuptools.package-data]
+mach3_kontrol = ["web/*.html", "web/*.js", "web/*.css"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

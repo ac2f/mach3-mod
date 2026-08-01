@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0a84ff">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Mach3-Kontrol</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<!-- ================= UST BAR ================= -->
+<header class="ust">
+  <div class="marka">
+    <div class="logo">M3</div>
+    <div class="marka-yazi">
+      <div class="ad">Mach3-Kontrol</div>
+      <div class="alt" id="altBaslik">baglanti bekleniyor…</div>
+    </div>
+  </div>
+
+  <div class="ust-orta">
+    <span class="cip" id="cipBaglanti">● baglanti yok</span>
+    <span class="cip" id="cipKontrol">kontrol: serbest</span>
+    <span class="cip gizli" id="cipKilit">⌨ kilit</span>
+  </div>
+
+  <div class="ust-sag">
+    <button class="dugme hayalet ikon" id="temaBtn" title="Acik/koyu tema">◐</button>
+    <button class="dugme acil" id="acilBtn" title="Her seyi durdur (Esc)">ACIL DURDUR</button>
+  </div>
+</header>
+
+<!-- kilit / uyari seridi -->
+<div class="serit gizli" id="serit"></div>
+
+<!-- ================= SEKMELER ================= -->
+<nav class="sekmeler" id="sekmeler">
+  <button class="sekme aktif" data-sekme="kontrol">Kontrol</button>
+  <button class="sekme" data-sekme="program">Program &amp; Sira</button>
+  <button class="sekme" data-sekme="guvenlik">Guvenlik</button>
+  <button class="sekme" data-sekme="ayarlar">Ayarlar</button>
+  <button class="sekme" data-sekme="gunluk">Gunluk</button>
+</nav>
+
+<main class="govde">
+
+<!-- ========================================================= KONTROL -->
+<section class="sayfa aktif" id="sayfa-kontrol">
+
+  <div class="izgara">
+
+    <!-- DRO -->
+    <div class="kart dro-kart">
+      <div class="kart-bas">
+        <h2>Konum</h2>
+        <div class="kart-bas-sag">
+          <span class="etiket" id="hareketRozet">durgun</span>
+        </div>
+      </div>
+      <div class="dro" id="dro"></div>
+      <div class="dro-alt">
+        <span>Besleme: <b id="droFeed">–</b> mm/dk</span>
+        <span>FRO: <b id="droFro">–</b>%</span>
+        <span>Devir: <b id="droDevir">–</b></span>
+      </div>
+    </div>
+
+    <!-- JOG -->
+    <div class="kart">
+      <div class="kart-bas">
+        <h2>Jog</h2>
+        <div class="secim" id="jogModu">
+          <button class="aktif" data-mod="adim">Adim</button>
+          <button data-mod="surekli">Basili tut</button>
+        </div>
+      </div>
+
+      <div class="adimlar" id="adimlar"></div>
+
+      <div class="jog-pad">
+        <button class="jog bos"></button>
+        <button class="jog" data-eksen="Y" data-yon="1">Y+</button>
+        <button class="jog bos"></button>
+        <button class="jog" data-eksen="Z" data-yon="1">Z+</button>
+
+        <button class="jog" data-eksen="X" data-yon="-1">X−</button>
+        <button class="jog orta" id="jogDur">DUR</button>
+        <button class="jog" data-eksen="X" data-yon="1">X+</button>
+        <button class="jog" data-eksen="Z" data-yon="-1">Z−</button>
+
+        <button class="jog bos"></button>
+        <button class="jog" data-eksen="Y" data-yon="-1">Y−</button>
+        <button class="jog bos"></button>
+        <button class="jog guvenli" id="guvenliZBtn" title="Guvenli yukseklige cik">↑ Z guvenli</button>
+      </div>
+
+      <div class="satir">
+        <label>Jog beslemesi</label>
+        <input type="number" id="jogFeed" class="alan" value="1000" min="1" step="100">
+        <span class="birim">mm/dk</span>
+      </div>
+      <p class="ipucu">Basili tut modunda parmagi/fareyi cektiginizde veya
+        baglanti koptugunda hareket <b>aninda durur</b> (olu adam butonu).</p>
+    </div>
+
+    <!-- HASSAS HAREKET -->
+    <div class="kart">
+      <div class="kart-bas"><h2>Hassas hareket</h2></div>
+
+      <div class="olcu-satir" data-eksen="X">
+        <span class="eksen-adi">X</span>
+        <button class="dugme hayalet kucuk" data-yon="-1">← sola</button>
+        <input type="number" class="alan mesafe" value="10" step="0.1">
+        <button class="dugme hayalet kucuk" data-yon="1">saga →</button>
+      </div>
+      <div class="olcu-satir" data-eksen="Y">
+        <span class="eksen-adi">Y</span>
+        <button class="dugme hayalet kucuk" data-yon="-1">↓ geri</button>
+        <input type="number" class="alan mesafe" value="10" step="0.1">
+        <button class="dugme hayalet kucuk" data-yon="1">ileri ↑</button>
+      </div>
+      <div class="olcu-satir" data-eksen="Z">
+        <span class="eksen-adi">Z</span>
+        <button class="dugme hayalet kucuk" data-yon="-1">↓ asagi</button>
+        <input type="number" class="alan mesafe" value="1" step="0.1">
+        <button class="dugme hayalet kucuk" data-yon="1">yukari ↑</button>
+      </div>
+
+      <div class="ayirac"></div>
+
+      <div class="kart-bas"><h3>Mutlak konuma git</h3></div>
+      <div class="satir uc">
+        <input type="number" id="gitX" class="alan" placeholder="X">
+        <input type="number" id="gitY" class="alan" placeholder="Y">
+        <input type="number" id="gitZ" class="alan" placeholder="Z">
+      </div>
+      <div class="satir">
+        <button class="dugme genis" id="gitBtn">Git (once guvenli Z)</button>
+      </div>
+      <div class="satir">
+        <button class="dugme hayalet" id="sifiraGitBtn">X0 Y0'a don</button>
+      </div>
+    </div>
+
+    <!-- SIFIRLAMA -->
+    <div class="kart">
+      <div class="kart-bas">
+        <h2>Sifirlama / is sifiri</h2>
+      </div>
+      <p class="ipucu">
+        “Su anki konumun <b>5 mm sagi</b> yeni X sifiri olsun” gibi kaydirmali
+        sifirlama: ofseti yazip yonu secin. Ofset 0 ise klasik “burasi sifir”.
+      </p>
+
+      <div class="sifir-satir" data-eksen="X">
+        <span class="eksen-adi">X</span>
+        <button class="dugme kucuk" data-ofset="0">Burasi 0</button>
+        <div class="sifir-ofset">
+          <input type="number" class="alan ofset" value="5" step="0.1">
+          <button class="dugme hayalet kucuk" data-yon="-1">← solu</button>
+          <button class="dugme hayalet kucuk" data-yon="1">sagi →</button>
+        </div>
+      </div>
+      <div class="sifir-satir" data-eksen="Y">
+        <span class="eksen-adi">Y</span>
+        <button class="dugme kucuk" data-ofset="0">Burasi 0</button>
+        <div class="sifir-ofset">
+          <input type="number" class="alan ofset" value="5" step="0.1">
+          <button class="dugme hayalet kucuk" data-yon="-1">↓ gerisi</button>
+          <button class="dugme hayalet kucuk" data-yon="1">ilerisi ↑</button>
+        </div>
+      </div>
+      <div class="sifir-satir" data-eksen="Z">
+        <span class="eksen-adi">Z</span>
+        <button class="dugme kucuk" data-ofset="0">Burasi 0</button>
+        <div class="sifir-ofset">
+          <input type="number" class="alan ofset" value="0.2" step="0.1">
+          <button class="dugme hayalet kucuk" data-yon="-1">↓ altisi</button>
+          <button class="dugme hayalet kucuk" data-yon="1">ustu ↑</button>
+        </div>
+      </div>
+
+      <div class="ayirac"></div>
+      <div class="satir">
+        <label>DRO'ya deger yaz</label>
+        <select id="droEksen" class="alan dar">
+          <option>X</option><option>Y</option><option>Z</option>
+        </select>
+        <input type="number" id="droDeger" class="alan" value="0" step="0.001">
+        <button class="dugme kucuk" id="droYazBtn">Yaz</button>
+      </div>
+    </div>
+
+    <!-- KLAVYE KILIDI -->
+    <div class="kart kilit-kart">
+      <div class="kart-bas">
+        <h2>Klavye / arayuz kilidi</h2>
+        <label class="anahtar">
+          <input type="checkbox" id="kilitAnahtar"><span></span>
+        </label>
+      </div>
+      <p class="ipucu">
+        Kilit acikken <b>Windows, Alt, Tab ve diger tum tuslar yutulur</b>;
+        yalnizca jog tuslari gecer. Boylece Mach3 jog sirasinda odagi
+        kaybetmez ve eksen “kacmaz”. Ayrica Mach3 odagi kaybederse hareket
+        otomatik durdurulur.
+      </p>
+      <div class="kilit-durum" id="kilitDurum"></div>
+      <div class="tus-harita">
+        <div><kbd>←</kbd><kbd>→</kbd> X</div>
+        <div><kbd>↑</kbd><kbd>↓</kbd> Y</div>
+        <div><kbd>PgUp</kbd><kbd>PgDn</kbd> Z</div>
+        <div><kbd>Space</kbd> feed hold</div>
+        <div><kbd>Esc</kbd> acil durdur</div>
+      </div>
+    </div>
+
+    <!-- MDI -->
+    <div class="kart">
+      <div class="kart-bas"><h2>MDI (elle G-Code)</h2></div>
+      <div class="satir">
+        <input type="text" id="mdiSatir" class="alan" placeholder="G0 X100 Y50">
+        <button class="dugme" id="mdiBtn">Gonder</button>
+      </div>
+      <p class="ipucu">Gonderilmeden once hedefler yumusak limitlere gore
+        denetlenir; limit disina cikan satir reddedilir.</p>
+      <div class="mdi-gecmis" id="mdiGecmis"></div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ========================================================= PROGRAM -->
+<section class="sayfa" id="sayfa-program">
+  <div class="prog-duzen">
+
+    <!-- sol: dosya + blok listesi -->
+    <div class="kart prog-sol">
+      <div class="kart-bas">
+        <h2>G-Code</h2>
+        <button class="mini" id="gozatBtn">Dosya sec…</button>
+      </div>
+      <div class="dosya-bilgi" id="dosyaBilgi">Henuz dosya yuklenmedi.</div>
+
+      <div class="sira-bas">
+        <span>Kesim sirasi</span>
+        <span class="ipucu-kucuk">baslanacak blogu secin</span>
+      </div>
+      <div class="blok-liste" id="blokListe"></div>
+    </div>
+
+    <!-- sag: onizleme + calistirma -->
+    <div class="prog-sag">
+      <div class="kart">
+        <div class="kart-bas">
+          <h2>Takim yolu</h2>
+          <div class="kart-bas-sag">
+            <label class="mini-onay"><input type="checkbox" id="numaraGoster" checked> numara</label>
+            <label class="mini-onay"><input type="checkbox" id="tasimaGoster"> tasima</label>
+          </div>
+        </div>
+        <div class="onizleme" id="onizleme">
+          <div class="bos-mesaj">Dosya secin, kesim sirasi burada gorunur.</div>
+        </div>
+      </div>
+
+      <div class="kart">
+        <div class="kart-bas"><h2>Sure tahmini</h2></div>
+        <div class="sure-kutu" id="sureKutu">–</div>
+      </div>
+
+      <div class="kart">
+        <div class="kart-bas"><h2>Calistir</h2></div>
+        <div class="denetim" id="denetimKutu">Once denetim yapin.</div>
+        <div class="satir">
+          <button class="dugme hayalet" id="denetleBtn">Guvenlik denetimi</button>
+          <label class="onay"><input type="checkbox" id="onayKutu"> Denetimi okudum, onayliyorum</label>
+        </div>
+        <div class="satir">
+          <button class="dugme basla" id="baslatBtn" disabled>Secili bloktan BASLAT</button>
+        </div>
+        <div class="satir uc">
+          <button class="dugme hayalet" id="feedHoldBtn">Feed hold</button>
+          <button class="dugme hayalet" id="devamBtn">Devam</button>
+          <button class="dugme hayalet" id="durdurBtn">Durdur</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- dosya gezgini -->
+  <div class="katman gizli" id="gezginKatman">
+    <div class="katman-kutu">
+      <div class="kart-bas">
+        <h2>Dosya sec</h2>
+        <button class="mini" id="gezginKapat">Kapat</button>
+      </div>
+      <div class="yol-cubugu" id="gezginYol"></div>
+      <div class="gezgin" id="gezgin"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================= GUVENLIK -->
+<section class="sayfa" id="sayfa-guvenlik">
+  <div class="izgara">
+    <div class="kart">
+      <div class="kart-bas"><h2>Yumusak limitler (makine koordinati)</h2></div>
+      <p class="ipucu">Her hareket, gonderilmeden once bu hacme gore
+        denetlenir. <b>Makinenizin gercek olculerini girin.</b></p>
+      <table class="tablo" id="limitTablo"></table>
+      <label class="onay">
+        <input type="checkbox" id="limitDogru">
+        Bu degerleri makinemde dogruladim
+      </label>
+      <div class="satir">
+        <label>Limit payi</label>
+        <input type="number" id="limitPayi" class="alan" step="0.5">
+        <span class="birim">mm</span>
+      </div>
+      <label class="onay">
+        <input type="checkbox" id="limitZorunlu"> Yumusak limitleri uygula
+      </label>
+    </div>
+
+    <div class="kart">
+      <div class="kart-bas"><h2>Hareket sinirlari</h2></div>
+      <div class="satir"><label>En buyuk jog adimi</label>
+        <input type="number" id="gMaxAdim" class="alan" step="1"><span class="birim">mm</span></div>
+      <div class="satir"><label>En yuksek jog beslemesi</label>
+        <input type="number" id="gMaxFeed" class="alan" step="100"><span class="birim">mm/dk</span></div>
+      <div class="satir"><label>Guvenli Z</label>
+        <input type="number" id="gGuvenliZ" class="alan" step="1"><span class="birim">mm</span></div>
+      <div class="satir"><label>En derin elle inis</label>
+        <input type="number" id="gDerinlik" class="alan" step="1"><span class="birim">mm</span></div>
+      <div class="satir"><label>Surekli jog ust siniri</label>
+        <input type="number" id="gJogSure" class="alan" step="1"><span class="birim">sn</span></div>
+      <div class="satir"><label>Kalp atisi araligi</label>
+        <input type="number" id="gKalp" class="alan" step="50"><span class="birim">ms</span></div>
+      <label class="onay"><input type="checkbox" id="gGuvenliZZorunlu">
+        XY hareketinden once Z'yi guvenli yuksekli§e al</label>
+      <div class="satir"><button class="dugme genis" id="guvenlikKaydet">Kaydet</button></div>
+    </div>
+
+    <div class="kart">
+      <div class="kart-bas"><h2>Durum</h2></div>
+      <div class="durum-liste" id="guvenlikDurum"></div>
+      <div class="uyari-kutu">
+        <b>Unutmayin:</b> Bu yazilim bir guvenlik cihazi degildir. Donanim
+        acil-stop butonunuzun ve limit switchlerinizin yerine gecmez.
+        Yazilim/ag/Windows her zaman cokebilir.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================= AYARLAR -->
+<section class="sayfa" id="sayfa-ayarlar">
+  <div class="izgara">
+    <div class="kart">
+      <div class="kart-bas"><h2>Baglanti</h2></div>
+      <div class="satir">
+        <label>Tur</label>
+        <select id="baglantiTur" class="alan">
+          <option value="otomatik">Otomatik</option>
+          <option value="com">Mach3 (COM)</option>
+          <option value="simulasyon">Simulasyon</option>
+        </select>
+      </div>
+      <div class="satir"><label>ProgID</label>
+        <input type="text" id="progid" class="alan"></div>
+      <div class="satir"><label>Yoklama</label>
+        <input type="number" id="yoklamaHz" class="alan" step="1"><span class="birim">Hz</span></div>
+      <div class="satir">
+        <button class="dugme" id="baglanBtn">Baglan</button>
+        <button class="dugme hayalet" id="kesBtn">Baglantiyi kes</button>
+      </div>
+      <div class="yetenek" id="yetenekKutu"></div>
+    </div>
+
+    <div class="kart">
+      <div class="kart-bas"><h2>Makine</h2></div>
+      <div class="satir"><label>Hizli hiz X/Y</label>
+        <input type="number" id="hizXY" class="alan" step="100"><span class="birim">mm/dk</span></div>
+      <div class="satir"><label>Hizli hiz Z</label>
+        <input type="number" id="hizZ" class="alan" step="100"><span class="birim">mm/dk</span></div>
+      <div class="satir"><label>Ivme X/Y</label>
+        <input type="number" id="ivmeXY" class="alan" step="10"><span class="birim">mm/s²</span></div>
+      <div class="satir"><label>Ivme Z</label>
+        <input type="number" id="ivmeZ" class="alan" step="10"><span class="birim">mm/s²</span></div>
+      <div class="satir"><label>Sifirlama yontemi</label>
+        <select id="sifirYontem" class="alan">
+          <option value="dro">DRO'ya yaz (SetOEMDRO)</option>
+          <option value="g10">G10 L20 (fikstur ofseti)</option>
+        </select></div>
+      <div class="satir"><label>Sure kalibrasyonu</label>
+        <input type="number" id="sureKatsayi" class="alan" step="0.01"></div>
+      <div class="satir"><button class="dugme genis" id="makineKaydet">Kaydet</button></div>
+    </div>
+
+    <div class="kart genis-kart">
+      <div class="kart-bas">
+        <h2>Mach3 OEM kodlari</h2>
+        <button class="mini" id="oemKaydet">Kaydet</button>
+      </div>
+      <p class="ipucu">
+        Kodlar Mach3 surumune/profiline gore degisebilir.
+        <b>guven: dusuk</b> olanlari kendi makinenizde dogrulayin
+        (Mach3 → Operator → OEM kod listesi).
+      </p>
+      <div class="oem" id="oemKutu"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================= GUNLUK -->
+<section class="sayfa" id="sayfa-gunluk">
+  <div class="kart">
+    <div class="kart-bas">
+      <h2>Olay gunlugu</h2>
+      <span class="ipucu-kucuk">gonderilen her komut kaydedilir</span>
+    </div>
+    <div class="gunluk" id="gunluk"></div>
+  </div>
+</section>
+
+</main>
+
+<!-- ================= PIN KATMANI ================= -->
+<div class="katman gizli" id="pinKatman">
+  <div class="katman-kutu dar-kutu">
+    <h2>Uzaktan erisim</h2>
+    <p class="ipucu">Bu cihaz makinenin bilgisayari degil. Sunucu konsolunda
+      yazan <b>PIN</b> kodunu girin.</p>
+    <input type="tel" id="pinAlan" class="alan buyuk" inputmode="numeric"
+           placeholder="000000" maxlength="12">
+    <div class="satir"><button class="dugme genis" id="pinBtn">Giris</button></div>
+    <div class="hata gizli" id="pinHata"></div>
+  </div>
+</div>
+
+<!-- bildirim -->
+<div class="bildirim-alan" id="bildirimAlan"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
