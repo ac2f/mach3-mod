@@ -166,6 +166,8 @@ class COMBaglanti(TemelBaglanti):
         super().__init__(ayar)
         self.progid = (self.ayar.get("progid") or "Mach4.Document")
         self.yedekler = list(self.ayar.get("yedek_progid") or [])
+        # False (varsayilan): yalnizca ZATEN ACIK olan Mach3'e baglan.
+        self.mach3_baslat = bool(self.ayar.get("mach3_baslat", False))
         self._isci = None
 
     # -- yasam dongusu ---------------------------------------------------
@@ -183,12 +185,30 @@ class COMBaglanti(TemelBaglanti):
 
         def _kur():
             import win32com.client
+            # 1) ONCE ZATEN CALISAN Mach3'e baglan. Dogrudan Dispatch
+            #    kullanmak, Mach3 kapaliyken YENI bir Mach3 baslatabilir;
+            #    ikinci bir ornek hareket denetleyicisini ele gecirmeye
+            #    calisir ve profil secim ekrani ile takilir. Bu yuzden
+            #    varsayilan davranis "yalnizca acik olana bagla".
+            for ad in adaylar:
+                try:
+                    return win32com.client.GetActiveObject(ad)
+                except Exception as e:                # noqa: BLE001
+                    hatalar.append(f"{ad} (calisan): {e}")
+            if not self.mach3_baslat:
+                raise Mach3Hata(
+                    "Calisan Mach3 bulunamadi. Once Mach3'u acin. "
+                    "(Mach3 aciksa: bu programi Mach3 ile AYNI yetkide "
+                    "calistirin - biri yonetici digeri degilse birbirlerini "
+                    "goremezler. Yine de olmuyorsa Ayarlar > Baglanti'dan "
+                    "'Mach3 kapaliysa baslat' secenegini acin.)")
+            # 2) Kullanici acikca izin verdiyse Mach3'u baslatmayi dene
             son = None
             for ad in adaylar:
                 try:
                     return win32com.client.Dispatch(ad)
                 except Exception as e:                # noqa: BLE001
-                    hatalar.append(f"{ad}: {e}")
+                    hatalar.append(f"{ad} (baslat): {e}")
                     son = e
             raise son or Mach3Hata("ProgID bulunamadi")
 

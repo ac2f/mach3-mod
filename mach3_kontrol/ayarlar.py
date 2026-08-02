@@ -26,6 +26,9 @@ VARSAYILAN = {
         "tur": "otomatik",
         "progid": "Mach4.Document",     # Mach3'un OLE sunucu adi (evet, "Mach4")
         "yedek_progid": ["Mach3.Document"],
+        # false: yalnizca ZATEN ACIK Mach3'e baglan (onerilen). true yapmak,
+        # Mach3 kapaliyken Windows'un yeni bir Mach3 baslatmasina izin verir.
+        "mach3_baslat": False,
         "yoklama_hz": 10,               # DRO okuma sikligi (Hz)
         "yeniden_baglan_sn": 3.0,
     },

@@ -663,6 +663,7 @@ async function ayarlariYukle() {
   $("#baglantiTur").value = a.baglanti.tur;
   $("#progid").value = a.baglanti.progid;
   $("#yoklamaHz").value = a.baglanti.yoklama_hz;
+  $("#mach3Baslat").checked = !!a.baglanti.mach3_baslat;
   $("#hizXY").value = a.makine.hizli_hiz.X;
   $("#hizZ").value = a.makine.hizli_hiz.Z;
   $("#ivmeXY").value = a.makine.ivme.X;
@@ -706,7 +707,8 @@ $("#guvenlikKaydet").onclick = () => {
 
 $("#makineKaydet").onclick = () => calis(() => api("/api/ayarlar", { yama: {
   baglanti: { tur: $("#baglantiTur").value, progid: $("#progid").value,
-              yoklama_hz: parseFloat($("#yoklamaHz").value) || 10 },
+              yoklama_hz: parseFloat($("#yoklamaHz").value) || 10,
+              mach3_baslat: $("#mach3Baslat").checked },
   makine: {
     hizli_hiz: { X: parseFloat($("#hizXY").value),
                  Y: parseFloat($("#hizXY").value),

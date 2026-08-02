@@ -84,10 +84,20 @@ Telefondan o adrese girip **PIN**'i yazarsiniz. (PIN
 
 ## Mach3 ile baglanti (onemli)
 
-Baglanti, Mach3'un **OLE/COM otomasyon arayuzu** uzerinden kurulur
-(`Mach4.Document` — evet, Mach3'te bile ProgID boyledir; farkli ise Ayarlar >
-Baglanti'dan degistirin). Bu arayuz `GetOEMDRO / SetOEMDRO / Code /
-DoOEMButton` gibi metotlar sunar.
+**Mach3 tarafina hicbir sey kurulmaz.** Eklenti (plugin), makro (`.m1s`),
+brain, screenset veya XML degisikligi **gerekmez**; Mach3 klasorune tek bir
+dosya bile yazilmaz. Kullanilan sey, Mach3'un kendi kurulumuyla birlikte
+gelen **OLE/COM otomasyon arayuzudur** (`Mach4.Document` — evet, Mach3'te
+bile ProgID boyledir; farkli ise Ayarlar > Baglanti'dan degistirin). Bu
+arayuz `GetOEMDRO / SetOEMDRO / Code / DoOEMButton` gibi metotlar sunar.
+Kurulan tek sey Windows'a **Python + pywin32**'dir.
+
+**Mach3'u once siz acin.** Program varsayilan olarak yalnizca **zaten
+calisan** Mach3'e baglanir (`GetActiveObject`). Boylece Mach3 kapaliyken
+yanlislikla **ikinci bir Mach3 ornegi** baslatilmaz — iki ornek hareket
+denetleyicisini paylasamaz. Mach3 acik oldugu halde "calisan Mach3
+bulunamadi" diyorsa: **ikisi ayni yetkide calismalidir** (biri yonetici,
+digeri normal ise birbirlerini goremezler).
 
 **Iki nokta kendi makinenizde dogrulanmalidir:**
 
