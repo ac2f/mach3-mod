@@ -63,6 +63,10 @@ def main(argv=None):
                     help="Mach3 yerine sanal tezgah (deneme/egitim)")
     ap.add_argument("--com", action="store_true",
                     help="Gercek Mach3 COM baglantisini zorla")
+    ap.add_argument("--mach3-baslat", action="store_true",
+                    dest="mach3_baslat",
+                    help="Mach3 kapaliysa COM ile baslatilmasina izin ver "
+                         "(Mach3 elle acildiginda baglanti kurulamiyorsa)")
     ap.add_argument("--baglanma", action="store_false", dest="baglan",
                     help="Acilista baglanmayi deneme")
     ap.add_argument("--ayar", help="Ayar dosyasi yolu")
@@ -82,6 +86,8 @@ def main(argv=None):
         ayar.veri["baglanti"]["tur"] = "simulasyon"
     elif a.com:
         ayar.veri["baglanti"]["tur"] = "com"
+    if a.mach3_baslat:
+        ayar.veri["baglanti"]["mach3_baslat"] = True
 
     if a.tani:
         from . import tani
@@ -99,7 +105,8 @@ def main(argv=None):
                     ac=True if a.tarayici_ac else None,
                     ayarlar_yolu=a.ayar, baglan=a.baglan,
                     tur=("simulasyon" if a.simulasyon
-                         else "com" if a.com else None))
+                         else "com" if a.com else None),
+                    mach3_baslat=a.mach3_baslat or None)
     return 0
 
 

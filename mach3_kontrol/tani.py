@@ -21,6 +21,7 @@ Ciktiyi oldugu gibi paylasabilirsiniz; makineye ozel bir bilgi icermez.
 """
 
 import ctypes
+import os
 import platform
 import re
 import struct
@@ -171,6 +172,64 @@ def _uyeler(nesne):
     return sorted(adlar), ""
 
 
+def _clsid_sunucu(clsid, gorunum):
+    """CLSID icin kayitli sunucu EXE/DLL yolu.
+
+    'Server execution failed' hatasinin en somut sebebi buradaki yolun
+    yanlis olmasidir (Mach3 baska dizine kurulmus, tasinmis ya da eski bir
+    kurulumdan kalma kayit).
+    """
+    if platform.system() != "Windows" or not clsid:
+        return None, ""
+    try:
+        import winreg
+    except ImportError:
+        return None, ""
+    erisim = winreg.KEY_READ | (winreg.KEY_WOW64_32KEY if gorunum == 32
+                                else winreg.KEY_WOW64_64KEY)
+    for tur in ("LocalServer32", "InprocServer32"):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                rf"SOFTWARE\Classes\CLSID\{clsid}\{tur}",
+                                0, erisim) as k:
+                return winreg.QueryValue(k, ""), tur
+        except OSError:
+            continue
+    return None, ""
+
+
+def _surec_yolu(pid):
+    """Calisan surecin tam EXE yolu."""
+    if platform.system() != "Windows" or not pid:
+        return None
+    try:
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x1000, False, int(pid))
+        if not h:
+            return None
+        try:
+            boyut = ctypes.c_ulong(1024)
+            tampon = ctypes.create_unicode_buffer(1024)
+            if k32.QueryFullProcessImageNameW(h, 0, tampon,
+                                              ctypes.byref(boyut)):
+                return tampon.value
+        finally:
+            k32.CloseHandle(h)
+    except Exception:                                 # noqa: BLE001
+        return None
+    return None
+
+
+def _yol_temizle(komut):
+    """'"C:\\Mach3\\Mach3.exe" /Automation' -> 'C:\\Mach3\\Mach3.exe'"""
+    if not komut:
+        return ""
+    k = komut.strip()
+    if k.startswith('"'):
+        return k[1:].split('"', 1)[0]
+    return k.split(" /")[0].split(" -")[0].strip()
+
+
 def _surec_32bit_mi(pid):
     """Verilen surec 64-bit Windows uzerinde 32-bit mi calisiyor?"""
     try:
@@ -273,6 +332,31 @@ def calistir(ayarlar=None):
     print()
     print("  Ayarlardaki ProgID : " + str(b_ayar.get("progid")))
 
+    # --- Kayitli sunucu EXE'si gercekten var mi? -----------------------
+    calisan_yol = _surec_yolu(pid)
+    if calisan_yol:
+        print(f"  Calisan Mach3 EXE  : {calisan_yol}")
+    yol_sorunu = False
+    for ad, clsid in (p32 + p64):
+        if not clsid:
+            continue
+        for gorunum in (32, 64):
+            komut, tur = _clsid_sunucu(clsid, gorunum)
+            if not komut:
+                continue
+            exe = _yol_temizle(komut)
+            var = os.path.isfile(exe)
+            print(f"  {ad} [{gorunum}-bit] {tur}:")
+            print(f"    {komut}")
+            _durum(var, "dosya var" if var else f"DOSYA YOK -> {exe}")
+            if not var:
+                yol_sorunu = True
+            elif calisan_yol and os.path.normcase(exe) != \
+                    os.path.normcase(calisan_yol):
+                print("    ! Kayitli yol, CALISAN Mach3'ten farkli "
+                      "(iki kurulum olabilir).")
+                yol_sorunu = True
+
     # En kritik teshis: 32-bit kayit + 64-bit Python = goremez
     bit_uyusmazligi = bool(p32) and not p64 and py_64
     if bit_uyusmazligi:
@@ -348,15 +432,31 @@ def calistir(ayarlar=None):
             print("   3. C:\\Python312-32\\python.exe -m pip install pywin32")
             print("   4. C:\\Python312-32\\python.exe main.py --tani")
             print("      (once teshis, sonra: ... main.py)")
+        elif yol_sorunu:
+            print("  EN OLASI SEBEP: kayitli sunucu EXE yolu yanlis.")
+            print("  Yukarida 'DOSYA YOK' ya da 'farkli' isaretli satira")
+            print("  bakin. Mach3 tasinmis/yeniden kurulmus olabilir.")
+            print()
+            print("  COZUM - kaydi tazeleyin (yonetici cmd):")
+            print("   1. cd <Mach3'un GERCEK kurulu oldugu dizin>")
+            print("   2. Mach3.exe /regserver")
+            print("      (bu switch yoksa Mach3'u ayni dizinden bir kez")
+            print("       yonetici olarak calistirmak da kaydi tazeler)")
         else:
-            print("  Sirasiyla deneyin:")
-            print("   1. Mach3 ile bu programi AYNI yetkide calistirin")
-            print("      (Mach3 yoneticiyse: cmd'yi 'Yonetici olarak calistir').")
-            print("   2. Mach3'u bir kez yonetici olarak acip kapatin")
-            print("      (COM sunucu kaydini tazeler).")
-            print("   3. 4. adimda ProgID hic gorunmuyorsa Mach3 kurulumu")
-            print("      COM sunucusunu kaydetmemis olabilir; Mach3'u")
-            print("      yeniden kurmayi deneyin.")
+            print("  Yetki ve ProgID dogru gorunuyor. Kalan en olasi sebep:")
+            print("  Mach3 elle acildiginda COM sinif fabrikasini kaydetmiyor")
+            print("  ve tek-ornek oldugu icin COM ikinci kopyayi da acamiyor.")
+            print()
+            print("  BUNU DENEYIN - Mach3'u COM baslatsin:")
+            print("   1. Mach3'u TAMAMEN kapatin (gorev yoneticisinden de")
+            print("      mach3.exe kalmadigini dogrulayin).")
+            print("   2. python main.py --tani")
+            print("      -> Dispatch bu kez Mach3'u kendisi baslatir; profil")
+            print("         secim ekrani cikarsa profilinizi secin.")
+            print("   3. Calisirsa uygulamayi soyle baslatin:")
+            print("      python main.py --mach3-baslat")
+            print("      (Mach3'u kendisi acar; Ayarlar > Baglanti'da kalici")
+            print("       hale getirebilirsiniz.)")
         print()
         print("  Bu ciktinin tamamini paylasabilirsiniz.")
         return 2

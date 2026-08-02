@@ -110,6 +110,21 @@ def test_com_hata_aciklamalari():
     assert TANI.com_hata_aciklama("bilinmeyen hata") == ""
 
 
+
+def test_sunucu_yolu_ayiklama():
+    """Kayit defterindeki komut satirindan EXE yolu dogru cikarilmali."""
+    assert TANI._yol_temizle('"C:\\Mach3\\Mach3.exe" /Automation') == \
+        "C:\\Mach3\\Mach3.exe"
+    assert TANI._yol_temizle("C:\\Mach3\\Mach3.exe -Embedding") == \
+        "C:\\Mach3\\Mach3.exe"
+    assert TANI._yol_temizle("") == ""
+
+
+def test_windows_disinda_sunucu_sorgulari_guvenli():
+    assert TANI._clsid_sunucu("{ABC}", 32) == (None, "")
+    assert TANI._surec_yolu(1) is None
+
+
 if __name__ == "__main__":
     for ad, fn in sorted(list(globals().items())):
         if ad.startswith("test_"):
