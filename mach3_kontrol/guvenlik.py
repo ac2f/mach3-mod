@@ -10,7 +10,11 @@ Denetimler
 ----------
 * Yumusak limit    - hedef konum calisma hacminin disina cikiyor mu (pay ile).
 * Adim/besleme     - tek jog adimi ve besleme ust sinirlari.
-* Dalis derinligi  - elle Z inisi en derin izin verilen degeri asiyor mu.
+* Tezgah tabani    - MAKINE koordinatinda mutlak Z alt siniri. Is sifirindan,
+                     takim boyundan ve aktif profilden BAGIMSIZDIR; bu yuzden
+                     nereye sifirlarsaniz sifirlayin tezgaha dalinmaz.
+* Dalis derinligi  - elle Z inisi, IS sifirina gore en derin degeri asiyor mu
+                     (tabandan ayri, operator rahatligi icin).
 * Guvenli Z        - XY tasima oncesi takim guvenli yukseklikte mi.
 * Program kapsami  - dosyanin TUM hareketleri, mevcut is sifirina gore
                      calisma hacmine sigiyor mu (program baslamadan once).
@@ -208,6 +212,41 @@ class Guvenlik:
     def g(self):
         return self.ayarlar["guvenlik"]
 
+    # -- makine Z tabani (tezgah korumasi) --------------------------------
+    # NEDEN AYRI BIR DENETIM: `max_dalis_derinlik` IS koordinatindadir, yani
+    # "is sifirinin N mm altina inme" demektir. Farkli boyda bicak takip
+    # farkli yuksekliklerde sifirlayinca ayni sayi HER SEFERINDE BASKA BIR
+    # FIZIKSEL YUKSEKLIGE denk gelir - tezgahi korumaz.
+    #
+    # `makine_z_taban` ise MAKINE koordinatindadir ve is sifirindan, takim
+    # boyundan, aktif profilden BAGIMSIZDIR. Tablanin fiziksel yeri
+    # degismedigi icin bu deger de degismez: nereye sifirlarsaniz sifirlayin
+    # hicbir komut bu degerin altina inemez.
+    def z_taban(self):
+        """Makine koordinatinda mutlak alt sinir; None ise denetim kapali."""
+        if not self.g.get("makine_z_taban_zorunlu", True):
+            return None
+        v = self.g.get("makine_z_taban")
+        return None if v is None else float(v)
+
+    def taban_dogrula(self, makine_z, etiket="hareket"):
+        """Makine koordinatindaki Z hedefini tabana gore denetler."""
+        taban = self.z_taban()
+        if taban is None or makine_z is None:
+            return []
+        if makine_z < taban - 1e-6:
+            return [f"{etiket}: Z makine koordinatinda {makine_z:.2f} mm'ye "
+                    f"inecek; tezgah tabani siniri {taban:.2f} mm "
+                    f"({taban - makine_z:.2f} mm asiliyor)"]
+        return []
+
+    def taban_payi(self, makine_z):
+        """Tabana kac mm kaldi? (arayuzde gosterilir; None = denetim kapali)"""
+        taban = self.z_taban()
+        if taban is None or makine_z is None:
+            return None
+        return round(float(makine_z) - taban, 3)
+
     # -- yardimcilar ------------------------------------------------------
     def limit(self, eksen):
         return (self.g.get("yumusak_limit") or {}).get(eksen.upper())
@@ -262,15 +301,27 @@ class Guvenlik:
         if mevcut is not None:
             hedef = mevcut + mesafe
             sebepler += self.hedef_dogrula({eksen: hedef}, "Jog")
-        # Elle Z inisi derinlik siniri (is koordinatinda degerlendirilir)
+            # Tezgah tabani: tezgah koordinatinda, is sifirindan bagimsiz.
+            if eksen == "Z" and mesafe < 0:
+                sebepler += self.taban_dogrula(hedef, "Jog")
+        elif self.limitler_aktif() and self.limit_araligi(eksen):
+            # FAIL-CLOSED: konum bilinmiyorsa limitin asilip asilmadigi da
+            # bilinemez. Eskiden denetim sessizce ATLANIYORDU (fail-open) ve
+            # hareket serbest kaliyordu; bu, limit tanimlanmis bir eksende
+            # kabul edilemez.
+            sebepler.append(
+                f"{eksen} icin tezgah koordinati bilinmiyor (referans "
+                f"alinmadi ya da makine DRO'su okunamiyor); limit denetimi "
+                f"yapilamadigi icin hareket reddedildi")
+        # Elle Z inisi derinlik siniri (IS koordinatinda; tabandan ayridir)
         if eksen == "Z" and mesafe < 0:
             derin = self.g.get("max_dalis_derinlik")
             z_is = (is_konum or {}).get("Z")
             if derin is not None and z_is is not None:
                 if z_is + mesafe < float(derin) - 1e-6:
                     sebepler.append(
-                        f"Z inisi {z_is + mesafe:.2f} mm, en derin izin "
-                        f"verilen {float(derin):.2f} mm")
+                        f"Z inisi is sifirina gore {z_is + mesafe:.2f} mm, "
+                        f"elle inis siniri {float(derin):.2f} mm")
         if sebepler:
             raise GuvenlikHatasi("Jog reddedildi", sebepler)
         return True
@@ -288,11 +339,12 @@ class Guvenlik:
             eksen = eksen.upper()
             makine_hedef[eksen] = deger + (ofset or {}).get(eksen, 0.0)
         sebepler += self.hedef_dogrula(makine_hedef, "Konumlama")
+        sebepler += self.taban_dogrula(makine_hedef.get("Z"), "Konumlama")
         z_hedef = hedefler.get("Z")
         derin = self.g.get("max_dalis_derinlik")
         if z_hedef is not None and derin is not None and z_hedef < float(derin):
-            sebepler.append(f"Z hedefi {z_hedef:.2f} mm, en derin izin verilen "
-                            f"{float(derin):.2f} mm")
+            sebepler.append(f"Z hedefi is sifirina gore {z_hedef:.2f} mm, "
+                            f"elle inis siniri {float(derin):.2f} mm")
         if sebepler:
             raise GuvenlikHatasi("Hareket reddedildi", sebepler)
         return True
@@ -352,13 +404,20 @@ class Guvenlik:
                         f"{eksen}: program {mx:.1f} mm'ye kadar cikiyor "
                         f"(makine {mx + o:.1f}), yumusak limit {ust:.1f}")
 
+        # Tezgah tabani: programin en derin noktasi makine koordinatina
+        # cevrilir. Bu bir UYARI degil HATA'dir - tabanin altina inen bir
+        # program calistirilmaz.
+        if kapsam["Z"][0] is not None:
+            z_makine = kapsam["Z"][0] + (ofset or {}).get("Z", 0.0)
+            hatalar += self.taban_dogrula(z_makine, "Program")
+
         derin = self.g.get("max_dalis_derinlik")
         if derin is not None and kapsam["Z"][0] is not None:
             if kapsam["Z"][0] < float(derin) - 1e-6:
                 uyarilar.append(
-                    f"Program Z{kapsam['Z'][0]:.2f} mm'ye iniyor; elle inis "
-                    f"siniriniz {float(derin):.2f} mm. (Program icin "
-                    f"engellenmez, kontrol edin.)")
+                    f"Program is sifirina gore Z{kapsam['Z'][0]:.2f} mm'ye "
+                    f"iniyor; ELLE inis siniriniz {float(derin):.2f} mm. "
+                    f"(Program icin engellenmez, kontrol edin.)")
         if not self.g.get("limitler_dogrulandi", False):
             uyarilar.append(
                 "Yumusak limitler henuz dogrulanmadi (Ayarlar > Guvenlik). "
@@ -383,11 +442,14 @@ class Guvenlik:
                 if v is not None:
                     sebepler += self.hedef_dogrula(
                         {eksen: v + (ofset or {}).get(eksen, 0.0)}, etiket)
+        if k["Z"][0] is not None:
+            sebepler += self.taban_dogrula(
+                k["Z"][0] + (ofset or {}).get("Z", 0.0), etiket)
         derin = self.g.get("max_dalis_derinlik")
         if derin is not None and k["Z"][0] is not None and \
                 k["Z"][0] < float(derin) - 1e-6:
-            sebepler.append(f"{etiket}: Z{k['Z'][0]:.2f} mm, en derin izin "
-                            f"verilen {float(derin):.2f} mm")
+            sebepler.append(f"{etiket}: Z{k['Z'][0]:.2f} mm (is sifirina "
+                            f"gore), elle inis siniri {float(derin):.2f} mm")
         return sorted(set(sebepler))
 
     # -- durum ------------------------------------------------------------
@@ -401,6 +463,9 @@ class Guvenlik:
             "max_jog_feed": g.get("max_jog_feed"),
             "guvenli_z": g.get("guvenli_z"),
             "max_dalis_derinlik": g.get("max_dalis_derinlik"),
+            "makine_z_taban": g.get("makine_z_taban"),
+            "makine_z_taban_zorunlu": bool(g.get("makine_z_taban_zorunlu",
+                                                 True)),
             "max_surekli_jog_sn": g.get("max_surekli_jog_sn"),
             "home_zorunlu": bool(g.get("home_zorunlu")),
         }

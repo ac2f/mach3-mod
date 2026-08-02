@@ -65,8 +65,12 @@ def main(argv=None):
                     help="Gercek Mach3 COM baglantisini zorla")
     ap.add_argument("--mach3-baslat", action="store_true",
                     dest="mach3_baslat",
-                    help="Mach3 kapaliysa COM ile baslatilmasina izin ver "
-                         "(Mach3 elle acildiginda baglanti kurulamiyorsa)")
+                    help="Mach3 kapaliysa onu baslat (varsayilan acik; "
+                         "elle acilan Mach3'e COM ile baglanilamaz)")
+    ap.add_argument("--profil", dest="profil",
+                    help="Mach3 profili (or. Mach3Mill). Profil verilmezse "
+                         "Mach3 profil secim penceresinde bekler ve COM "
+                         "arayuzunu acmaz.")
     ap.add_argument("--baglanma", action="store_false", dest="baglan",
                     help="Acilista baglanmayi deneme")
     ap.add_argument("--ayar", help="Ayar dosyasi yolu")
@@ -88,6 +92,8 @@ def main(argv=None):
         ayar.veri["baglanti"]["tur"] = "com"
     if a.mach3_baslat:
         ayar.veri["baglanti"]["mach3_baslat"] = True
+    if a.profil:
+        ayar.veri["baglanti"]["profil"] = a.profil
 
     if a.tani:
         from . import tani

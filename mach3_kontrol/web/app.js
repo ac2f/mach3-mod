@@ -88,6 +88,7 @@ function akisBaslat() {
 }
 
 function durumCiz(d) {
+  tezgahCiz(d);                 // tek-ekran (Tezgah sekmesi)
   // ---- baglanti cipi
   const c = $("#cipBaglanti");
   if (d.bagli) {
@@ -177,13 +178,18 @@ function durumCiz(d) {
 /* ================================================================== */
 /* Sekmeler / tema                                                     */
 /* ================================================================== */
-$$(".sekme").forEach(b => b.onclick = () => {
-  $$(".sekme").forEach(x => x.classList.remove("aktif"));
+function sekmeGec(ad) {
+  $$(".sekme").forEach(x => x.classList.toggle("aktif", x.dataset.sekme === ad));
   $$(".sayfa").forEach(x => x.classList.remove("aktif"));
-  b.classList.add("aktif");
-  $("#sayfa-" + b.dataset.sekme).classList.add("aktif");
-  if (b.dataset.sekme === "ayarlar" || b.dataset.sekme === "guvenlik") ayarlariYukle();
-});
+  const s = $("#sayfa-" + ad);
+  if (s) s.classList.add("aktif");
+  if (ad === "ayarlar" || ad === "guvenlik") ayarlariYukle();
+  if (ad === "rapor") raporCiz();
+  // Onizleme gizliyken cizilirse SVG olculeri 0 olur; sekmeye gelince tazele
+  if (ad === "tezgah") onizlemeCiz("#onizlemeMini");
+  if (ad === "program") onizlemeCiz();
+}
+$$(".sekme").forEach(b => b.onclick = () => sekmeGec(b.dataset.sekme));
 
 $("#temaBtn").onclick = () => {
   const s = document.documentElement.dataset.tema === "dark" ? "light" : "dark";
@@ -373,7 +379,49 @@ const TUS_EKSEN = {
 const YAZI_ALANI = e =>
   e && (e.tagName === "INPUT" || e.tagName === "TEXTAREA" || e.isContentEditable);
 
+/* ---- DRO yazma + besleme kisayollari (kilitten BAGIMSIZ) ----
+   Mach3'teki gibi Ctrl+X/Y/Z ekseni DRO'ya deger yazmayi acar. Ctrl
+   zorunlulugu Ayarlar > Klavye kisayollari'ndan kapatilabilir; kapaliyken
+   dogrudan X/Y/Z yeterlidir. Bir yazi alanina yazarken ikisi de calismaz. */
+function droKisayolu(e) {
+  const k = (S.ayarlar && S.ayarlar.klavye) || {};
+  const ctrlGerekli = k.dro_ctrl_gerekli !== false;
+  if (ctrlGerekli && !(e.ctrlKey || e.metaKey)) return null;
+  if (!ctrlGerekli && (e.ctrlKey || e.metaKey || e.altKey)) return null;
+  const harf = (e.key || "").toLowerCase();
+  const harita = k.dro_tuslari || { X: "x", Y: "y", Z: "z" };
+  for (const eksen of ["X", "Y", "Z"]) {
+    if (String(harita[eksen] || "").toLowerCase() === harf) return eksen;
+  }
+  return null;
+}
+
+function froKisayolu(e) {
+  const k = (S.ayarlar && S.ayarlar.klavye) || {};
+  if (e.key === (k.fro_azalt_tus || "F10")) return -1;
+  if (e.key === (k.fro_artir_tus || "F11")) return 1;
+  return 0;
+}
+
 document.addEventListener("keydown", (e) => {
+  // DRO penceresi acikken kisayollari tekrar isleme
+  if (!$("#droKatman").classList.contains("gizli")) {
+    if (e.key === "Escape") { e.preventDefault(); droKatmanKapat(); }
+    return;
+  }
+  // Referans penceresi acikken Esc pencereyi kapatsin; asagidaki genel
+  // Esc kuralina dusup acil durdurmayi tetiklemesin.
+  if (!$("#refKatman").classList.contains("gizli")) {
+    if (e.key === "Escape") { e.preventDefault(); refKatmanKapat(); }
+    return;
+  }
+  if (!YAZI_ALANI(e.target)) {
+    const eksen = droKisayolu(e);
+    if (eksen) { e.preventDefault(); droKatmanAc(eksen); return; }
+    const yon = froKisayolu(e);
+    if (yon) { e.preventDefault(); froDegistir(yon); return; }
+  }
+
   if (e.key === "Escape") { e.preventDefault(); acilDurdur("Esc"); return; }
   if (!S.kilitli) return;
   if (YAZI_ALANI(e.target) && !TUS_EKSEN[e.key]) return;   // ayar yazarken serbest
@@ -463,9 +511,13 @@ function programCiz(p) {
   blokIsaretle(p.secili_blok);
   sureCiz(p.sure);
   onizlemeCiz();
+  blokListeMiniCiz(p);
+  tSureCiz(p.sure);
+  onizlemeCiz("#onizlemeMini");
   $("#denetimKutu").textContent = "Once denetim yapin.";
   $("#onayKutu").checked = false;
   $("#baslatBtn").disabled = true;
+  $("#tBaslat").disabled = true;
 }
 
 async function blokSec(i) {
@@ -473,10 +525,14 @@ async function blokSec(i) {
   if (!p) return;
   S.program = p;
   blokIsaretle(i);
+  blokMiniIsaretle(i);
   sureCiz(p.sure);
+  tSureCiz(p.sure);
   onizlemeCiz();
+  onizlemeCiz("#onizlemeMini");
   $("#onayKutu").checked = false;
   $("#baslatBtn").disabled = true;
+  $("#tBaslat").disabled = true;
   $("#denetimKutu").textContent =
     `Blok ${i + 1} secildi. Baslatmadan once denetim yapin.`;
 }
@@ -509,9 +565,13 @@ function sureCiz(t) {
 }
 
 /* ---- takim yolu onizlemesi ---- */
-function onizlemeCiz() {
+/* Ayni cizim iki yerde kullanilir: Program sekmesindeki buyuk onizleme ve
+   Tezgah sekmesindeki tek-ekran onizlemesi. Gorunum (zoom/pan) durumu her
+   kap icin ayri tutulur, yoksa biri digerini kaydirir. */
+function onizlemeCiz(kapSecici = "#onizleme") {
   const p = S.program;
-  const kap = $("#onizleme");
+  const kap = $(kapSecici);
+  if (!kap) return;
   if (!p || !p.bloklar.length) {
     kap.innerHTML = `<div class="bos-mesaj">Dosya secin, kesim sirasi burada
       gorunur.</div>`;
@@ -524,8 +584,11 @@ function onizlemeCiz() {
   });
   const pay = Math.max((x1 - x0), (y1 - y0)) * 0.06 + 2;
   x0 -= pay; y0 -= pay; x1 += pay; y1 += pay;
-  if (!S.gorunum || S.gorunum.ad !== p.ad)
-    S.gorunum = { ad: p.ad, x: x0, y: y0, g: x1 - x0, y2: y1 - y0 };
+  S.gorunumler = S.gorunumler || {};
+  if (!S.gorunumler[kapSecici] || S.gorunumler[kapSecici].ad !== p.ad)
+    S.gorunumler[kapSecici] = { ad: p.ad, x: x0, y: y0,
+                                g: x1 - x0, y2: y1 - y0 };
+  S.gorunum = S.gorunumler[kapSecici];
 
   const secili = p.secili_blok;
   const numara = $("#numaraGoster").checked;
@@ -592,16 +655,596 @@ function onizlemeCiz() {
     uygula();
   };
   svg.onpointerup = svg.onpointerleave = () => { surukle = null; };
-  svg.ondblclick = () => { S.gorunum = null; onizlemeCiz(); };
+  svg.ondblclick = () => {
+    delete S.gorunumler[kapSecici];         // sigdirmaya don
+    onizlemeCiz(kapSecici);
+  };
 }
-$("#numaraGoster").onchange = onizlemeCiz;
-$("#tasimaGoster").onchange = onizlemeCiz;
+$("#numaraGoster").onchange = () => { onizlemeCiz(); onizlemeCiz("#onizlemeMini"); };
+$("#tasimaGoster").onchange = () => { onizlemeCiz(); onizlemeCiz("#onizlemeMini"); };
+
+/* ================================================================== */
+/* TEZGAH sayfasi - tek ekran (koordinat + G-Code + sira + sureler)     */
+/* ================================================================== */
+const EKSEN3 = ["X", "Y", "Z"];
+
+function tezgahCiz(d) {
+  /* ---- DRO: is + makine yan yana ---- */
+  const kutu = $("#tDro");
+  if (kutu.children.length !== EKSEN3.length) {
+    kutu.innerHTML = EKSEN3.map(e => `
+      <div class="t-eksen" data-e="${e}" title="Ctrl+${e} ile deger yaz">
+        <span class="ad">${e}</span>
+        <span class="is" id="tIs${e}">–</span>
+        <span class="mak"><i>makine</i> <b id="tMak${e}">–</b></span>
+      </div>`).join("");
+    $$("#tDro .t-eksen").forEach(el =>
+      el.onclick = () => droKatmanAc(el.dataset.e));
+  }
+  // Ikinci satirda MAKINE ham okumasi degil TEZGAH koordinati gosterilir:
+  // limitler buna gore denetlenir. Referans yoksa "?" gorunur.
+  EKSEN3.forEach(e => {
+    const v = d.konum[e];
+    const t = d.tezgah ? d.tezgah[e] : null;
+    $("#tIs" + e).textContent = v == null ? "–" : v.toFixed(3);
+    const el = $("#tMak" + e);
+    el.textContent = t == null ? "referanssiz" : t.toFixed(3);
+    el.parentElement.classList.toggle("referanssiz", t == null);
+  });
+  referansCiz(d.referans);
+
+  /* ---- tabana kalan pay ---- */
+  const tp = d.taban_payi;
+  const te = $("#tTabanDeger"), tk = $("#tTaban");
+  if (tp == null) {
+    te.textContent = "olculmedi";
+    tk.className = "t-taban yok";
+    tk.title = "Tezgah tabani ayarlanmadi: Guvenlik > Tezgah tabani";
+  } else {
+    te.textContent = tp.toFixed(2) + " mm";
+    tk.className = "t-taban " + (tp < 2 ? "kotu" : tp < 10 ? "uyari" : "ok");
+    tk.title = "Makine Z ile tezgah tabani arasindaki mesafe";
+  }
+
+  /* ---- besleme / devir ---- */
+  $("#tFro").textContent = d.fro == null ? "–" : Math.round(d.fro);
+  $("#tFeed").textContent = d.feed == null ? "–" : Math.round(d.feed);
+  $("#tDevir").textContent = d.devir == null ? "–" : Math.round(d.devir);
+  const h = $("#tHareket");
+  // RESET (E-Stop) durumu kritik: bu haldeyken Mach3 DRO yazmayi sessizce
+  // yok sayar, yani sifirlama/profil yukleme CALISMAZ. Acikca gosterilir.
+  if (d.estop) {
+    h.textContent = "RESET";
+    h.className = "etiket estop";
+    h.title = "Mach3 Reset (E-Stop) durumunda: sifirlama yapilamaz. " +
+              "Mach3'te Reset dugmesine basin.";
+  } else {
+    h.textContent = d.hareket ? "HAREKET" : "durgun";
+    h.className = "etiket" + (d.hareket ? " hareket" : "");
+    h.title = "";
+  }
+
+  /* ---- is ilerlemesi ---- */
+  const t = d.takip || {};
+  const p = t.ilerleme;
+  $("#tDolgu").style.width = (p == null ? 0 : p * 100).toFixed(1) + "%";
+  $("#tDolgu").className = "dolgu" + (t.duraklatildi ? " duraklatildi" : "");
+  $("#tGecen").textContent = t.aktif || t.bitti ? t.gecen_metin : "–";
+  $("#tKalan").textContent = t.kalan_metin || "–";
+  $("#tTahmini").textContent = t.tahmini_metin || "–";
+  $("#tYol").textContent = t.toplam_yol_mm
+    ? `${(t.yol_mm / 1000).toFixed(2)} / ${(t.toplam_yol_mm / 1000).toFixed(2)} m`
+    : "–";
+
+  /* ---- profiller ---- */
+  profilleriCiz(d.profiller);
+  /* ---- yeni dosya seridi ---- */
+  yeniDosyaCiz(d.izleme);
+}
+
+/* ---- tezgah referansi ----
+   Referans switch'i olmayan makinelerde Mach3'un makine koordinati tezgahin
+   kosesini gostermez. Referans alinmadan yumusak limitler koruyamaz, bu
+   yuzden hareket engellenir ve durum belirgin bir seritle gosterilir. */
+let _refImza = "";
+function referansCiz(r) {
+  const serit = $("#referansSerit");
+  if (!r) { serit.classList.add("gizli"); return; }
+  const imza = JSON.stringify(r);
+  if (imza === _refImza) return;
+  _refImza = imza;
+  if (r.alindi) {
+    serit.classList.remove("gizli");
+    serit.className = "referans-serit alindi";
+    const z = r.zaman
+      ? new Date(r.zaman * 1000).toLocaleTimeString("tr-TR") : "";
+    serit.innerHTML =
+      `<span class="rs-ik">✓</span>
+       <span class="rs-yazi">Tezgah referansi alindi${z ? " · " + z : ""}
+         <span class="rs-not">limitler bu noktadan olculuyor</span></span>
+       <button class="dugme hayalet kucuk" id="refDuzelt">Duzelt</button>
+       <button class="dugme hayalet kucuk" id="refBirak">Referansi dusur</button>`;
+    $("#refDuzelt").onclick = () => refKatmanAc();
+    $("#refBirak").onclick = () =>
+      calis(() => api("/api/referans", { islem: "birak" }),
+            "Referans dusuruldu");
+    return;
+  }
+  serit.classList.remove("gizli");
+  serit.className = "referans-serit yok";
+  serit.innerHTML =
+    `<span class="rs-ik">⚠</span>
+     <span class="rs-yazi"><b>Tezgah referansi alinmadi</b>
+       (${kacir((r.eksik || []).join(", "))}) —
+       ${r.zorunlu ? "hareket ENGELLI" : "limitler korumuyor"}.
+       <span class="rs-not">Kafanin su anki yerinin tezgah koordinatini
+         bildirin (sifir kosesindeyseniz 0).</span></span>
+     <button class="dugme kucuk" id="refAl">Referans al</button>`;
+  $("#refAl").onclick = () => refKatmanAc();
+}
+
+/* ------------------------------------------------------------------ */
+/* Tezgah referansi penceresi                                          */
+/* ------------------------------------------------------------------ */
+/* NEDEN elle deger: kafayi her seferinde sifir kosesine goturmek pratik
+   degil. Operator bulundugu yerin tezgah koordinatini yazabilirse
+   (orn. karsi ucta X=2099) referans dogru yerden kurulur. Eskiden yalniz
+   "burasi 0" denebiliyordu; yanlis noktada alinan referans yumusak
+   limitleri sessizce ise yaramaz hale getiriyordu. */
+function refKatmanAc() {
+  if (!S.durum || !S.durum.bagli) { bildir("Mach3 baglantisi yok", "hata"); return; }
+  const eksenler = (S.ayarlar && S.ayarlar.makine && S.ayarlar.makine.eksenler)
+    || ["X", "Y", "Z"];
+  const lim = ((S.ayarlar || {}).guvenlik || {}).yumusak_limit || {};
+  $("#refKatmanSatirlar").innerHTML = eksenler.map((e) => {
+    const t = (S.durum.tezgah || {})[e];
+    const a = lim[e] || {};
+    const ar = (a.min == null && a.max == null) ? ""
+      : `<span class="ref-ar">tezgah araligi ${a.min ?? "–"} .. ${a.max ?? "–"}</span>`;
+    return `<label class="ref-satir">
+      <input type="checkbox" class="ref-sec" data-e="${e}" checked>
+      <span class="ref-e">${e}</span>
+      <input type="number" class="alan ref-d" data-e="${e}" step="0.001"
+             value="${t == null ? 0 : t.toFixed(3)}" inputmode="decimal">
+      <span class="ref-simdi">su an: ${t == null ? "referanssiz" : t.toFixed(3)}</span>
+      ${ar}</label>`;
+  }).join("");
+  $("#refKatman").classList.remove("gizli");
+  setTimeout(() => { const a = $(".ref-d"); if (a) { a.focus(); a.select(); } }, 30);
+}
+
+function refKatmanKapat() { $("#refKatman").classList.add("gizli"); }
+
+async function refKatmanKaydet() {
+  const eksenler = [], degerler = {};
+  for (const s of $$(".ref-sec")) {
+    if (!s.checked) continue;
+    const e = s.dataset.e;
+    const v = parseFloat($(`.ref-d[data-e="${e}"]`).value);
+    if (!isFinite(v)) { bildir(`${e} icin gecerli bir sayi girin`, "hata"); return; }
+    eksenler.push(e);
+    degerler[e] = v;
+  }
+  if (!eksenler.length) { bildir("En az bir eksen secin", "hata"); return; }
+  const ozet = eksenler.map((e) => `${e}=${degerler[e]}`).join("  ");
+  if (!confirm("Kafanin SU ANKI yeri su tezgah koordinatinda mi?\n\n" + ozet +
+               "\n\nTum yumusak limitler buna gore olculecek. Yanlis deger " +
+               "girmek korumayi anlamsiz kilar.")) return;
+  refKatmanKapat();
+  await calis(() => api("/api/referans", { islem: "al", eksenler, degerler }),
+              "Tezgah referansi alindi: " + ozet);
+}
+
+/* Mach3'un MAKINE koordinatini bulunulan noktada sifirlar (Ref).
+   Tek yol budur: makine DRO'suna deger yazilamaz, sadece sifirlanabilir. */
+async function makineSifirla() {
+  if (!confirm(
+    "Mach3'un MAKINE koordinati bu noktada 0 yapilacak.\n\n" +
+    "• Home switch'i OLMAYAN eksenler kimildamaz.\n" +
+    "• Home switch'i TANIMLI eksen, switch'i ARAMAYA GIDER (hareket eder).\n\n" +
+    "Tezgah koordinatiniz korunur. Devam edilsin mi?")) return;
+  refKatmanKapat();
+  const s = await calis(
+    () => api("/api/referans", { islem: "makine_sifirla" }),
+    "Makine sifiri kuruldu");
+  if (s && s.islemeyen && s.islemeyen.length) {
+    bildir("Bazi eksenlerde Ref islemedi: " + s.islemeyen.join("; "), "uyari");
+  }
+}
+
+$("#refKatmanIptal").onclick = refKatmanKapat;
+$("#refKatmanTamam").onclick = refKatmanKaydet;
+$("#refMakineSifir").onclick = makineSifirla;
+$("#refKatman").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); refKatmanKaydet(); }
+  if (e.key === "Escape") { e.preventDefault(); refKatmanKapat(); }
+  e.stopPropagation();
+});
+
+/* ---- profil listesi ---- */
+let _profilImza = "";
+function profilleriCiz(pr) {
+  if (!pr) return;
+  const imza = JSON.stringify(pr);
+  if (imza === _profilImza) return;          // her karede DOM yenileme
+  _profilImza = imza;
+  const s = $("#tProfil");
+  s.innerHTML = `<option value="">— profil yok —</option>` +
+    (pr.liste || []).map(p =>
+      `<option value="${kacir(p.ad)}">${kacir(p.ad)}</option>`).join("");
+  s.value = pr.aktif || "";
+}
+
+/* ---- yeni dosya bildirimi ---- */
+let _yeniImza = "";
+function yeniDosyaCiz(iz) {
+  const serit = $("#yeniDosyaSerit");
+  const bekleyen = (iz && iz.bekleyen) || [];
+  const imza = bekleyen.map(b => b.yol).join("|");
+  if (imza === _yeniImza) return;
+  _yeniImza = imza;
+  if (!bekleyen.length) { serit.classList.add("gizli"); return; }
+  const b = bekleyen[0];
+  const konum = b.goreli && b.goreli !== "." ? b.goreli : "";
+  serit.classList.remove("gizli");
+  serit.innerHTML = `
+    <span class="yd-ik">🆕</span>
+    <span class="yd-yazi">Yeni G-Code dosyasi: <b>${kacir(b.ad)}</b>
+      ${konum ? `<span class="yd-klasor">${kacir(konum)}</span>` : ""}
+      ${bekleyen.length > 1
+        ? `<span class="yd-adet">+${bekleyen.length - 1} dosya daha</span>` : ""}
+    </span>
+    <button class="dugme kucuk" id="ydAc">Ac</button>
+    <button class="dugme hayalet kucuk" id="ydAtla">Atla</button>
+    <button class="dugme hayalet kucuk" id="ydHepsi">Hepsini atla</button>`;
+  $("#ydAc").onclick = async () => {
+    const p = await calis(() => api("/api/izleme", { islem: "ac", yol: b.yol }),
+                          "Program yuklendi");
+    if (p) { programCiz(p); sekmeGec("tezgah"); }
+  };
+  $("#ydAtla").onclick = () =>
+    calis(() => api("/api/izleme", { islem: "yoksay", yol: b.yol }));
+  $("#ydHepsi").onclick = () =>
+    calis(() => api("/api/izleme", { islem: "yoksay" }));
+}
+
+/* ---- kesim sirasi (kompakt) ---- */
+function blokListeMiniCiz(p) {
+  $("#tDosyaAd").textContent = p ? p.ad : "Dosya yuklenmedi";
+  $("#tBlokSayi").textContent = p ? `${p.bloklar.length} blok` : "";
+  if (!p) { $("#blokListeMini").innerHTML = ""; return; }
+  $("#blokListeMini").innerHTML = p.bloklar.map(b => `
+    <div class="blok" data-i="${b.id}">
+      <span class="no">${b.no}</span>
+      <span class="bilgi">X${b.x.toFixed(0)} Y${b.y.toFixed(0)} ·
+        ${b.kesim_uz.toFixed(0)} mm</span>
+      <span class="sure">${b.kalan_metin || ""}</span>
+    </div>`).join("");
+  $$("#blokListeMini .blok").forEach(el => el.onclick = () =>
+    blokSec(parseInt(el.dataset.i, 10)));
+  blokMiniIsaretle(p.secili_blok);
+}
+
+function blokMiniIsaretle(i) {
+  $$("#blokListeMini .blok").forEach(el => {
+    const n = parseInt(el.dataset.i, 10);
+    el.classList.toggle("secili", n === i);
+    el.classList.toggle("onceki", n < i);
+  });
+}
+
+function tSureCiz(t) {
+  if (!t) { $("#tSure").textContent = "–"; return; }
+  $("#tSure").innerHTML =
+    `<b>${kacir(t.toplam_metin)}</b> · kesim ${(t.kesim_sn / 60).toFixed(0)} dk ·
+     bosta ${(t.hizli_sn / 60).toFixed(0)} dk ·
+     yol ${(t.kesim_mm / 1000).toFixed(1)} m · FRO %${Math.round(t.fro)}`;
+}
+
+/* ---- tezgah sayfasi dugmeleri ---- */
+$("#tGozat").onclick = () => gezginAc();
+$("#tFeedHold").onclick = () => calis(() => api("/api/feedhold"));
+$("#tDevam").onclick = () => calis(() => api("/api/devam"));
+$("#tDurdur").onclick = () => calis(() => api("/api/durdur"));
+$("#tDenetle").onclick = () => denetleYap(true);
+$("#tBaslat").onclick = () => baslatYap(true);
+$("#froAzalt").onclick = () => froDegistir(-1);
+$("#froArtir").onclick = () => froDegistir(1);
+
+async function froDegistir(yon) {
+  const adim = (S.ayarlar && S.ayarlar.klavye &&
+                S.ayarlar.klavye.fro_adim) || 5;
+  await calis(() => api("/api/fro", { delta: yon * adim }));
+}
+
+/* ================================================================== */
+/* DRO yazma penceresi (Ctrl+X / Ctrl+Y / Ctrl+Z)                      */
+/* ================================================================== */
+let _droEksen = "X";
+
+function droKatmanAc(eksen) {
+  if (!S.durum || !S.durum.bagli) {
+    bildir("Mach3 baglantisi yok", "hata");
+    return;
+  }
+  _droEksen = eksen.toUpperCase();
+  const is = S.durum.konum[_droEksen];
+  const mak = S.durum.makine[_droEksen];
+  const tez = (S.durum.tezgah || {})[_droEksen];
+  $("#droKatmanEksen").textContent = _droEksen;
+  $("#droKatmanBilgi").innerHTML =
+    `su an: is <b>${is == null ? "–" : is.toFixed(3)}</b> ·
+     tezgah <b>${tez == null ? "– (referanssiz)" : tez.toFixed(3)}</b> ·
+     makine <b>${mak == null ? "–" : mak.toFixed(3)}</b>`;
+  // Referans yoksa tezgah kipi tek anlamli secim: limitler ancak boyle
+  // devreye girer. Referans varken varsayilan is koordinatidir.
+  const refYok = !((S.durum.referans || {}).alindi);
+  $$("input[name=droMod]").forEach(
+    (r) => { r.checked = (r.value === (refYok ? "tezgah" : "is")); });
+  droModCiz();
+  const alan = $("#droKatmanDeger");
+  alan.value = "0";
+  $("#droKatman").classList.remove("gizli");
+  setTimeout(() => { alan.focus(); alan.select(); }, 30);
+}
+
+function droModu() {
+  const s = $$("input[name=droMod]").find((r) => r.checked);
+  return s ? s.value : "is";
+}
+
+function droModCiz() {
+  const m = droModu();
+  $("#droModIsEt").classList.toggle("secili", m === "is");
+  $("#droModTezgahEt").classList.toggle("secili", m === "tezgah");
+  $("#droKatmanIpucu").innerHTML = m === "tezgah"
+    ? `<b>Tezgah:</b> “${_droEksen} ekseninde su an tezgahin bu
+       noktasindayim” dersiniz. Yumusak limitler bu andan itibaren buradan
+       olculur. Is (parca) sifiriniz degismez.`
+    : `<b>Is:</b> parca sifiri. 0 yazmak “burasi sifir” demektir.
+       Yumusak limitleri <u>degistirmez</u> — tezgah sinirini ayarlamak
+       icin ustten “Tezgah koordinati”ni secin.`;
+}
+
+function droKatmanKapat() { $("#droKatman").classList.add("gizli"); }
+
+async function droKatmanYaz() {
+  const v = parseFloat($("#droKatmanDeger").value);
+  if (!isFinite(v)) { bildir("Gecerli bir sayi girin", "hata"); return; }
+  const tezgahKipi = droModu() === "tezgah";
+  droKatmanKapat();
+  if (tezgahKipi) {
+    await calis(() => api("/api/referans", {
+      islem: "al", eksenler: [_droEksen], degerler: { [_droEksen]: v },
+    }), `Tezgah ${_droEksen} = ${v} olarak referanslandi`);
+    return;
+  }
+  await calis(() => api("/api/dro", { eksen: _droEksen, deger: v }),
+              `${_droEksen} DRO = ${v}`);
+}
+
+$$("input[name=droMod]").forEach(
+  (r) => r.addEventListener("change", droModCiz));
+$("#droKatmanIptal").onclick = droKatmanKapat;
+$("#droKatmanTamam").onclick = droKatmanYaz;
+$("#droKatmanDeger").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); droKatmanYaz(); }
+  if (e.key === "Escape") { e.preventDefault(); droKatmanKapat(); }
+  e.stopPropagation();          // kilit yakalayicisina gitmesin
+});
+
+/* ================================================================== */
+/* Is sifiri profilleri                                                */
+/* ================================================================== */
+$("#tProfilUygula").onclick = async () => {
+  const ad = $("#tProfil").value;
+  if (!ad) { bildir("Once bir profil secin", "uyari"); return; }
+  await calis(() => api("/api/profil/uygula", { ad }),
+              `Profil yuklendi: ${ad}`);
+};
+
+$("#tProfilKaydet").onclick = () => {
+  if (!S.durum || !S.durum.bagli) {
+    bildir("Profil kaydetmek icin Mach3 baglantisi gerekir", "hata");
+    return;
+  }
+  const o = S.durum.ofset || {};
+  $("#profilAd").value = $("#tProfil").value || "";
+  $("#profilOnizleme").innerHTML =
+    `Kaydedilecek is sifiri (makine koordinati):<br>` +
+    EKSEN3.map(e => `<b>${e}</b> ${(o[e] == null ? 0 : o[e]).toFixed(3)}`)
+      .join(" · ");
+  $("#profilKatman").classList.remove("gizli");
+  setTimeout(() => $("#profilAd").focus(), 30);
+};
+
+$("#profilIptal").onclick = () => $("#profilKatman").classList.add("gizli");
+$("#profilTamam").onclick = async () => {
+  const ad = $("#profilAd").value.trim();
+  if (!ad) { bildir("Profil adi gerekli", "hata"); return; }
+  const boy = parseFloat($("#profilBoy").value);
+  const r = await calis(() => api("/api/profil/kaydet", {
+    ad, takim_boyu: isFinite(boy) ? boy : null,
+    not: $("#profilNot").value }), `Profil kaydedildi: ${ad}`);
+  if (r) { $("#profilKatman").classList.add("gizli"); _profilImza = ""; }
+};
+$("#profilSil").onclick = async () => {
+  const ad = $("#tProfil").value;
+  if (!ad) { bildir("Silinecek profil secili degil", "uyari"); return; }
+  if (!confirm(`"${ad}" profili silinsin mi?`)) return;
+  await calis(() => api("/api/profil/sil", { ad }), "Profil silindi");
+  _profilImza = "";
+  $("#profilKatman").classList.add("gizli");
+};
+
+/* ================================================================== */
+/* Is raporu                                                           */
+/* ================================================================== */
+async function raporCiz() {
+  const d = await calis(() => api("/api/rapor", { son: true }));
+  if (!d || !d.rapor) {
+    $("#raporOzet").textContent = "Henuz calistirilmis bir is yok.";
+    $("#raporBloklar").innerHTML = "";
+    $("#raporOlaylar").innerHTML = "";
+    return;
+  }
+  const r = d.rapor;
+  const zaman = (t) => t ? new Date(t * 1000).toLocaleString("tr-TR") : "–";
+  const cift = (e, v) => `<div class="ro-satir"><span>${e}</span><b>${v}</b></div>`;
+  $("#raporOzet").innerHTML =
+    `<div class="ro-baslik">${kacir(r.ad || "–")}</div>` +
+    `<div class="ro-yol">${kacir(r.dosya || "")}</div>` +
+    `<div class="ro-izgara">` +
+    cift("Baslangic", zaman(r.baslangic_t)) +
+    cift("Bitis", zaman(r.bitis_t)) +
+    cift("Sonuc", kacir(r.bitis_sebep || (r.aktif ? "calisiyor" : "–"))) +
+    cift("Gecen sure", kacir(r.gecen_metin)) +
+    cift("Duraklama", `${Math.round(r.duraklama_sn)} sn (${r.duraklama_sayisi})`) +
+    cift("Tahmini", kacir(r.tahmini_metin)) +
+    cift("Sapma", r.sapma_orani == null ? "–" : r.sapma_orani.toFixed(2) + "x") +
+    cift("Kat edilen yol", `${(r.yol_mm / 1000).toFixed(2)} m`) +
+    cift("Profil", kacir(r.profil || "–")) +
+    cift("Tezgah tabani", r.taban == null ? "olculmedi" : r.taban + " mm") +
+    `</div>`;
+
+  const bl = r.bloklar || [];
+  $("#raporBloklar").innerHTML =
+    `<tr><th>Blok</th><th>Yol (mm)</th><th>Tahmini</th><th>Gercek</th>
+     <th>Fark</th></tr>` +
+    bl.map(b => {
+      const f = (b.tahmin_sn != null && b.gercek_sn != null)
+        ? b.gercek_sn - b.tahmin_sn : null;
+      return `<tr>
+        <td>${b.no}</td><td>${Math.round(b.yol_mm)}</td>
+        <td>${Math.round(b.tahmin_sn)} sn</td>
+        <td>${b.gercek_sn == null ? "–" : Math.round(b.gercek_sn) + " sn"}</td>
+        <td class="${f == null ? "" : f > 0 ? "kotu" : "iyi"}">${
+          f == null ? "–" : (f > 0 ? "+" : "") + Math.round(f) + " sn"}</td>
+      </tr>`;
+    }).join("");
+
+  $("#raporOlaylar").innerHTML = (r.olaylar || []).map(o =>
+    `<div class="ro-olay"><span>${new Date(o.t * 1000)
+      .toLocaleTimeString("tr-TR")}</span>
+     <span class="tur">${kacir(o.tur)}</span>
+     <span>${kacir(o.mesaj)}</span></div>`).join("");
+}
+$("#rapYenile").onclick = raporCiz;
+
+/* ================================================================== */
+/* Tezgah tabani / klavye / izleme ayarlari                            */
+/* ================================================================== */
+$("#tabanSuAn").onclick = () => {
+  const mz = S.durum && S.durum.tezgah ? S.durum.tezgah.Z : null;
+  if (mz == null) {
+    bildir("Once tezgah referansi alin", "hata"); return;
+  }
+  $("#gTaban").value = mz.toFixed(2);
+  bildir("Su anki makine Z yazildi — pay eklemeyi unutmayin", "uyari");
+};
+
+$("#tabanKaydet").onclick = async () => {
+  const ham = $("#gTaban").value.trim();
+  const deger = ham === "" ? null : parseFloat(ham);
+  if (ham !== "" && !isFinite(deger)) {
+    bildir("Gecerli bir sayi girin ya da bos birakin", "hata");
+    return;
+  }
+  // Tabanin calisma hacminin ustunde olmasi anlamsizdir; kullaniciyi uyar.
+  const lim = S.ayarlar && S.ayarlar.guvenlik.yumusak_limit &&
+              S.ayarlar.guvenlik.yumusak_limit.Z;
+  if (deger != null && lim && deger > lim.max) {
+    bildir("Taban, Z ust limitinden yuksek olamaz", "hata");
+    return;
+  }
+  if (deger == null && $("#gTabanZorunlu").checked)
+    bildir("Taban bos: denetim yapilamaz. Olcup girmeniz onerilir.", "uyari");
+  await calis(() => api("/api/ayarlar", { yama: { guvenlik: {
+    makine_z_taban: deger,
+    makine_z_taban_zorunlu: $("#gTabanZorunlu").checked } } }),
+    "Tezgah tabani kaydedildi");
+  ayarlariYukle();
+};
+
+$("#klavyeKaydet").onclick = async () => {
+  await calis(() => api("/api/ayarlar", { yama: { klavye: {
+    dro_ctrl_gerekli: $("#kDroCtrl").checked,
+    fro_azalt_tus: $("#kFroAzalt").value.trim() || "F10",
+    fro_artir_tus: $("#kFroArtir").value.trim() || "F11",
+    fro_adim: parseInt($("#kFroAdim").value, 10) || 5 } } }),
+    "Klavye ayarlari kaydedildi");
+  ayarlariYukle();
+};
+
+$("#izlemeKaydet").onclick = async () => {
+  await calis(() => api("/api/ayarlar", { yama: { izleme: {
+    aktif: $("#izAktif").checked,
+    kok: $("#izKok").value.trim(),
+    derinlik: parseInt($("#izDerinlik").value, 10) || 4,
+    aralik_sn: parseFloat($("#izAralik").value) || 5,
+    yeni_sayilir_dk: parseInt($("#izYeni").value, 10) || 120 } } }),
+    "Izleme ayarlari kaydedildi");
+  ayarlariYukle();
+};
+
+$("#izlemeSifirla").onclick = async () => {
+  await calis(() => api("/api/izleme", { islem: "sifirla" }),
+              "Izleme gecmisi unutuldu");
+  izlemeDurumCiz();
+};
+
+function izlemeDurumCiz() {
+  const iz = S.durum && S.durum.izleme;
+  const el = $("#izlemeDurum");
+  if (!el) return;
+  if (!iz || !iz.aktif) {
+    el.innerHTML = `<span class="ipucu-kucuk">Izleme kapali
+      (kok klasor bos ise kendiliginden kapalidir).</span>`;
+    return;
+  }
+  const son = iz.son_tarama
+    ? new Date(iz.son_tarama * 1000).toLocaleTimeString("tr-TR") : "–";
+  el.innerHTML = `<span class="ipucu-kucuk">
+    ${iz.taranan_dosya} dosya izleniyor · son tarama ${son}
+    ${iz.bekleyen && iz.bekleyen.length
+      ? ` · <b>${iz.bekleyen.length} yeni</b>` : ""}
+    ${iz.hata ? `<br><span style="color:var(--tehlike)">${kacir(iz.hata)}</span>`
+              : ""}</span>`;
+}
 
 /* ---- denetim + baslatma ---- */
-$("#denetleBtn").onclick = async () => {
+/* Tezgah sayfasindan da cagrilir; oradaki BASLAT, denetim gectikten sonra
+   ayrica onay kutusu istemez ama yine de bir onay penceresi gosterir. */
+async function denetleYap(tezgahtan = false) {
   const d = await calis(() => api("/api/program/denetle", {}));
-  if (!d) return;
+  if (!d) return null;
   S.denetim = d;
+  $("#tBaslat").disabled = !d.gecti;
+  if (tezgahtan) {
+    bildir(d.gecti
+      ? `Denetim gecti — blok ${d.blok + 1}'den baslatilabilir`
+      : "Denetim BASARISIZ", d.gecti ? "ok" : "hata",
+      d.hatalar.concat(d.uyarilar));
+  }
+  return d;
+}
+
+async function baslatYap(tezgahtan = false) {
+  if (!S.program) { bildir("Once bir program yukleyin", "uyari"); return; }
+  if (!S.denetim || !S.denetim.gecti) {
+    bildir("Once guvenlik denetimi yapin", "uyari");
+    return;
+  }
+  const blok = S.program.secili_blok;
+  if (!confirm(`Blok ${blok + 1}'den itibaren KESIM BASLATILACAK.\n` +
+               `Takim, is parcasi ve bagliliklar hazir mi?`)) return;
+  const r = await calis(() => api("/api/program/baslat", { blok, onay: true }));
+  if (r) bildir("Program baslatildi: blok " + (blok + 1), "ok");
+}
+
+$("#denetleBtn").onclick = async () => {
+  const d = await denetleYap(false);
+  if (!d) return;
   const p = [];
   p.push(d.gecti
     ? `<div class="ok-satir">✓ Denetim gecti (blok ${d.blok + 1}'den baslar)</div>`
@@ -628,13 +1271,7 @@ $("#onayKutu").onchange = (e) => {
   $("#baslatBtn").disabled = !(e.target.checked && S.denetim && S.denetim.gecti);
 };
 
-$("#baslatBtn").onclick = async () => {
-  const blok = S.program ? S.program.secili_blok : 0;
-  if (!confirm(`Blok ${blok + 1}'den itibaren KESIM BASLATILACAK.\n` +
-               `Takim, is parcasi ve bagliliklar hazir mi?`)) return;
-  const r = await calis(() => api("/api/program/baslat", { blok, onay: true }));
-  if (r) bildir("Program baslatildi: blok " + (blok + 1), "ok");
-};
+$("#baslatBtn").onclick = () => baslatYap(false);
 
 /* ================================================================== */
 /* Ayarlar & guvenlik formlari                                         */
@@ -666,6 +1303,32 @@ async function ayarlariYukle() {
   $("#gJogSure").value = a.guvenlik.max_surekli_jog_sn;
   $("#gKalp").value = a.guvenlik.jog_kalp_atisi_ms;
   $("#gGuvenliZZorunlu").checked = !!a.guvenlik.guvenli_z_zorunlu;
+
+  // tezgah tabani
+  $("#gTaban").value = a.guvenlik.makine_z_taban == null
+    ? "" : a.guvenlik.makine_z_taban;
+  $("#gTabanZorunlu").checked = a.guvenlik.makine_z_taban_zorunlu !== false;
+  // Taban TEZGAH koordinatindadir (referansa gore), ham makine
+  // okumasi degil.
+  const mz = S.durum && S.durum.tezgah ? S.durum.tezgah.Z : null;
+  $("#tabanSuAnDeger").textContent = mz == null
+    ? "(once referans alin)" : `su an tezgah Z: ${mz.toFixed(3)} mm`;
+
+  // klavye kisayollari
+  const k = a.klavye || {};
+  $("#kDroCtrl").checked = k.dro_ctrl_gerekli !== false;
+  $("#kFroAzalt").value = k.fro_azalt_tus || "F10";
+  $("#kFroArtir").value = k.fro_artir_tus || "F11";
+  $("#kFroAdim").value = k.fro_adim == null ? 5 : k.fro_adim;
+
+  // dosya izleme
+  const iz = a.izleme || {};
+  $("#izAktif").checked = iz.aktif !== false;
+  $("#izKok").value = iz.kok || "";
+  $("#izDerinlik").value = iz.derinlik == null ? 4 : iz.derinlik;
+  $("#izAralik").value = iz.aralik_sn == null ? 5 : iz.aralik_sn;
+  $("#izYeni").value = iz.yeni_sayilir_dk == null ? 120 : iz.yeni_sayilir_dk;
+  izlemeDurumCiz();
 
   $("#baglantiTur").value = a.baglanti.tur;
   $("#progid").value = a.baglanti.progid;

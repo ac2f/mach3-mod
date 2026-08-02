@@ -117,8 +117,10 @@ def com_hata_aciklama(e):
     if "-2147221021" in m or "Operation unavailable" in m:
         return "nesne Running Object Table'da yok (tek basina sorun degil)"
     if "-2146959355" in m or "Server execution failed" in m:
-        return ("COM sunucusu baslatilamadi: ya yetki uyusmazligi var, ya da "
-                "Mach3 zaten acik oldugu icin ikinci ornek acilamiyor")
+        return ("COM sunucusu baslatilamadi. Mach3'te en sik sebep: Mach3 "
+                "ELLE acilmis (otomasyon arayuzunu yalnizca /Automation ile "
+                "acar) ya da bu acilisa zaten bir istemci baglanmis. Daha "
+                "seyrek: yetki uyusmazligi")
     if "-2147024891" in m or "Access is denied" in m:
         return "erisim reddedildi (yetki uyusmazligi)"
     if "-2147221164" in m or "Class not registered" in m:
@@ -165,8 +167,9 @@ def _uyeler(nesne):
                 pass
 
     try:
-        if nesne._oleobj_.GetTypeInfoCount() > 0:
-            _topla(nesne._oleobj_.GetTypeInfo())
+        ole = BAG._ole(nesne)          # CDispatch ya da ham PyIDispatch
+        if ole.GetTypeInfoCount() > 0:
+            _topla(ole.GetTypeInfo())
     except Exception as e:                            # noqa: BLE001
         return [], f"tip bilgisi alinamadi: {_kisa(e)}"
     return sorted(adlar), ""
@@ -382,38 +385,37 @@ def calistir(ayarlar=None):
 
     nesne = None
     kazanan = ""
-    # Mach3 kendini ROT'a her an kaydetmiyor olabilir; birkac kez denenir.
-    for deneme in range(3):
-        for ad in adaylar:
-            try:
-                nesne = win32com.client.GetActiveObject(ad)
-                kazanan = f"{ad} (GetActiveObject)"
-                _durum(True, f"{ad:<28} GetActiveObject basarili"
-                             + (f" ({deneme + 1}. denemede)" if deneme else ""))
-                break
-            except Exception as e:                    # noqa: BLE001
-                if deneme == 0:
-                    _durum(False, f"{ad:<28} GetActiveObject: {_kisa(e)}")
-                    if com_hata_aciklama(e):
-                        print(f"         -> {com_hata_aciklama(e)}")
-        if nesne is not None:
+    # Once Dispatch: Mach3 /Automation ile baslatilmissa sinif fabrikasi
+    # kayitlidir ve ANINDA baglanir. (GetActiveObject genelde basarisizdir;
+    # Mach3 kendini Running Object Table'a hic kaydetmez.)
+    for ad in adaylar:
+        try:
+            nesne = win32com.client.Dispatch(ad)
+            kazanan = f"{ad} (Dispatch)"
+            _durum(True, f"{ad:<28} Dispatch basarili")
             break
-        if deneme < 2:
-            time.sleep(0.5)
+        except Exception as e:                        # noqa: BLE001
+            _durum(False, f"{ad:<28} Dispatch: {_kisa(e)}")
+            if com_hata_aciklama(e):
+                print(f"         -> {com_hata_aciklama(e)}")
+
     if nesne is None:
-        print("  (GetActiveObject basarisiz olabilir - cogu COM sunucusu")
-        print("   Running Object Table'a kaydolmaz; bu tek basina sorun")
-        print("   degildir. Simdi Dispatch deneniyor.)")
-        for ad in adaylar:
+        # Mach3 kapaliysa: dogru sekilde (calisma dizini + profil +
+        # /Automation) baslatmayi deneyelim; asil cozum budur.
+        if not (pencere or surec):
+            exe = BAG.mach3_exe_bul(b_ayar)
+            print()
+            print(f"  Mach3 kapali. Dogru sekilde baslatiliyor: {exe}")
+            print(f"  (calisma dizini = {os.path.dirname(exe) if exe else '?'}, "
+                  f"profil = {b_ayar.get('profil') or '(yok)'})")
             try:
-                nesne = win32com.client.Dispatch(ad)
-                kazanan = f"{ad} (Dispatch)"
-                _durum(True, f"{ad:<28} Dispatch basarili")
-                break
+                nesne = BAG.mach3_otomasyon_baslat(
+                    exe, (b_ayar.get("profil") or "").strip(),
+                    progid=b_ayar.get("progid") or "Mach4.Document")
+                kazanan = "otomasyon ile baslatildi"
+                _durum(True, "Mach3 baslatildi ve COM arayuzu acildi")
             except Exception as e:                    # noqa: BLE001
-                _durum(False, f"{ad:<28} Dispatch: {_kisa(e)}")
-                if com_hata_aciklama(e):
-                    print(f"         -> {com_hata_aciklama(e)}")
+                _durum(False, f"baslatma basarisiz: {_kisa(e)}")
 
     if nesne is None:
         _yaz("SONUC")
@@ -442,30 +444,49 @@ def calistir(ayarlar=None):
             print("   2. Mach3.exe /regserver")
             print("      (bu switch yoksa Mach3'u ayni dizinden bir kez")
             print("       yonetici olarak calistirmak da kaydi tazeler)")
-        else:
-            print("  Yetki ve ProgID dogru gorunuyor. Kalan en olasi sebep:")
-            print("  Mach3 elle acildiginda COM sinif fabrikasini kaydetmiyor")
-            print("  ve tek-ornek oldugu icin COM ikinci kopyayi da acamiyor.")
+        elif pencere or surec:
+            print("  EN OLASI SEBEP: Mach3 ELLE acilmis.")
             print()
-            print("  BUNU DENEYIN - Mach3'u COM baslatsin:")
-            print("   1. Mach3'u TAMAMEN kapatin (gorev yoneticisinden de")
+            print("  Mach3 COM otomasyon arayuzunu yalnizca '/Automation'")
+            print("  anahtariyla baslatildiginda acar. Cift tiklayarak acilan")
+            print("  Mach3 kendini ne Running Object Table'a kaydeder ne de")
+            print("  sinif fabrikasi olusturur; bu yuzden ona baglanmak")
+            print("  teknik olarak MUMKUN DEGILDIR.")
+            print("  Ayrica sinif fabrikasi TEK KULLANIMLIKTIR: her Mach3")
+            print("  acilisina yalnizca bir istemci baglanabilir.")
+            print()
+            print("  COZUM:")
+            print("   1. Mach3'u TAMAMEN kapatin (gorev yoneticisinde")
             print("      mach3.exe kalmadigini dogrulayin).")
-            print("   2. python main.py --tani")
-            print("      -> Dispatch bu kez Mach3'u kendisi baslatir; profil")
-            print("         secim ekrani cikarsa profilinizi secin.")
-            print("   3. Calisirsa uygulamayi soyle baslatin:")
-            print("      python main.py --mach3-baslat")
-            print("      (Mach3'u kendisi acar; Ayarlar > Baglanti'da kalici")
-            print("       hale getirebilirsiniz.)")
+            print("   2. python main.py   -> Mach3'u kendisi dogru sekilde")
+            print("      acar (calisma dizini + profil + /Automation).")
+            print("   Mach3'u elle acmaya devam etmek isterseniz kisayolunuza")
+            print("   /Automation anahtarini ekleyin, or.:")
+            print("      C:\\Mach3\\Mach3.exe /p Mach3Mill /Automation")
+        else:
+            print("  Mach3 baslatilamadi ya da baslatilinca COM arayuzunu")
+            print("  acmadi. En sik iki sebep:")
+            print("   * Calisma dizini yanlis -> Mach3 lisans dosyasini")
+            print("     (Mach1Lic.dat) bulamayip 'Corrupt install, no license")
+            print("     file found' diyerek kapanir. Bu program Mach3'u kendi")
+            print("     klasorunden baslatir; elle denerken siz de oyle yapin.")
+            print("   * Profil secilmemis -> Mach3 profil penceresinde bekler")
+            print("     ve COM arayuzunu hic acmaz. Ayarlar > Baglanti >")
+            print("     'profil' alanina profil adini yazin (or. Mach3Mill).")
         print()
         print("  Bu ciktinin tamamini paylasabilirsiniz.")
         return 2
 
     # ---------------------------------------------------------------- 6
     _yaz(f"6) Baglanti kuruldu: {kazanan}")
-    metotlar = {ad: hasattr(nesne, ad) for ad in BAG.COM_METOTLAR}
+    # `hasattr` bu nesnelerde calismaz (TypeLib kayitli degil, tip bilgisi
+    # yok); uyeler GetIDsOfNames ile yoklanir.
+    metotlar = {ad: BAG.uye_var(nesne, ad) for ad in BAG.COM_METOTLAR}
     for ad, var in metotlar.items():
         _durum(var, f"metot {ad}")
+    if not metotlar.get("GetOEMDRO"):
+        print("  (Mach3'te bu NORMALDIR: ust nesne yalnizca bir 'kapi'dir,")
+        print("   asil metotlar GetScriptDispatch() nesnesindedir - bkz. 7)")
 
     # ---------------------------------------------------------------- 7
     if not metotlar.get("GetOEMDRO"):
@@ -483,7 +504,7 @@ def calistir(ayarlar=None):
         print()
         print("  Betik nesnesi araniyor (Mach3'te asil metotlar burada olur):")
         alt, alt_ad = BAG.betik_nesnesi(nesne)
-        if alt is not None and alt is not nesne:
+        if alt_ad:
             _durum(True, f"{alt_ad}() bir nesne dondurdu")
             alt_uyeler, alt_hata = _uyeler(alt)
             if alt_uyeler:
@@ -493,11 +514,12 @@ def calistir(ayarlar=None):
                                              for u in alt_uyeler[i:i + 4]))
             elif alt_hata:
                 print(f"  {alt_hata}")
-            if hasattr(alt, "GetOEMDRO"):
+            if BAG.uye_var(alt, "GetOEMDRO"):
                 _durum(True, "GetOEMDRO bu nesnede BULUNDU -> otomatik "
                              "kullanilacak")
                 nesne, kazanan = alt, f"{kazanan} -> {alt_ad}()"
-                metotlar = {ad: hasattr(nesne, ad) for ad in BAG.COM_METOTLAR}
+                metotlar = {ad: BAG.uye_var(nesne, ad)
+                            for ad in BAG.COM_METOTLAR}
         else:
             print("  Bilinen adlarla betik nesnesi bulunamadi.")
 
@@ -510,11 +532,12 @@ def calistir(ayarlar=None):
 
     print()
     print("  DRO okuma denemesi (is koordinatlari):")
+    sarmal = BAG._Mach3Nesne(nesne)
     kod = {"X": 800, "Y": 801, "Z": 802}
     okundu = False
     for eksen, k in kod.items():
         try:
-            deger = nesne.GetOEMDRO(k)
+            deger = sarmal.GetOEMDRO(k)
             print(f"    {eksen} (DRO {k}) = {deger}")
             okundu = True
         except Exception as e:                        # noqa: BLE001

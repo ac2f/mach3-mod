@@ -17,8 +17,10 @@ import copy
 import json
 import os
 
+SURUM = 3
+
 VARSAYILAN = {
-    "surum": 1,
+    "surum": SURUM,
 
     "baglanti": {
         # "otomatik" -> Windows'ta COM, digerinde simulasyon
@@ -26,11 +28,19 @@ VARSAYILAN = {
         "tur": "otomatik",
         "progid": "Mach4.Document",     # Mach3'un OLE sunucu adi (evet, "Mach4")
         "yedek_progid": ["Mach3.Document"],
-        # false: yalnizca ZATEN ACIK Mach3'e baglan (onerilen). true yapmak,
-        # Mach3 kapaliyken Windows'un yeni bir Mach3 baslatmasina izin verir.
-        "mach3_baslat": False,
+        # Mach3 COM arayuzunu yalnizca "/Automation" ile baslatildiginda acar;
+        # elle acilan Mach3'e BAGLANILAMAZ. Bu yuzden varsayilan olarak Mach3'u
+        # bu program baslatir. Ayrinti: baglanti.py icindeki uzun not.
+        "mach3_baslat": True,
+        # Bos ise kayit defterindeki LocalServer32 yolundan bulunur.
+        "mach3_exe": "",
+        # Profil verilmezse Mach3 profil secim penceresinde bekler ve COM
+        # arayuzunu hic acmaz. Or. "Mach3Mill", "Mach3Turn", "Plasma".
+        "profil": "Mach3Mill",
         "yoklama_hz": 10,               # DRO okuma sikligi (Hz)
         "yeniden_baglan_sn": 3.0,
+        # Mach3'u biz baslatiyorsak acilis uzun surebilir (profil yukleme).
+        "acilis_zaman_asimi_sn": 120,
     },
 
     "makine": {
@@ -45,7 +55,21 @@ VARSAYILAN = {
     },
 
     "guvenlik": {
-        # Makinenizin gercek calisma hacmi (MAKINE koordinati, mm).
+        # ---------------------------------------------------------------
+        # TEZGAH REFERANSI
+        # Referans switch'i olmayan makinelerde Mach3'un "makine koordinati"
+        # tezgahin kosesini DEGIL, Mach3 acildiginda kafanin bulundugu
+        # rastgele noktayi gosterir. Bu yuzden yumusak limitler tek basina
+        # korumaz: 0..2100 araligi rastgele bir noktadan olculur.
+        #
+        # Cozum: operator kafayi tezgahin SIFIR KOSESINE park edip
+        # "Referans al" der; o andaki makine okumasi tezgah sifiri olarak
+        # kaydedilir. Tum limitler artik "tezgah koordinatinda" denetlenir:
+        #     tezgah = makine_okumasi - referans
+        # Referans bellekte tutulur ve Mach3 her yeniden baslatildiginda
+        # (makine sifiri kaydigi icin) dusdurulur.
+        "referans_zorunlu": True,       # referanssizken hareket engellensin
+        # Makinenizin gercek calisma hacmi (TEZGAH koordinati, mm).
         "limitler_dogrulandi": False,
         "yumusak_limit": {
             "X": {"min": 0.0,    "max": 3000.0},
@@ -62,7 +86,17 @@ VARSAYILAN = {
 
         "guvenli_z": 20.0,              # XY hareketi oncesi olmasi gereken Z
         "guvenli_z_zorunlu": True,      # XY tasima once Z'yi guvenli yuksekli§e al
-        "max_dalis_derinlik": -60.0,    # bundan asagi elle Z inisine izin verme
+        # IS koordinatinda elle inis siniri (is sifirina gore degerlendirilir)
+        "max_dalis_derinlik": -60.0,
+        # TEZGAH koordinatinda (referansa gore) mutlak Z tabani. Is sifirini
+        # nerede yaparsaniz yapin, hangi boyda bicak takarsaniz takin hicbir
+        # komut bunun altina inemez -> tezgaha dalma korumasi.
+        # null ise denetim yapilmaz.
+        # OLCUM: once referans alin, sonra takimi tabla yuzeyine deger
+        # konuma indirip arayuzdeki TEZGAH Z degerini okuyun, 1-2 mm pay
+        # ekleyip yazin.
+        "makine_z_taban": None,
+        "makine_z_taban_zorunlu": True,
 
         "home_zorunlu": False,          # program baslatmadan once referans sart mi
         "onay_gereken": ["program_baslat", "sifirla", "home"],
@@ -80,12 +114,43 @@ VARSAYILAN = {
         "odak_bekcisi": True,           # Mach3 odagi kaybederse hareketi durdur
         "odak_pencere_baslik": "Mach3",  # izlenecek pencere basligi (icerir)
         "odak_geri_al": True,           # odagi Mach3'e geri ver
+
+        # DRO duzenleme kisayolu (Mach3'teki gibi): true ise Ctrl+X/Y/Z,
+        # false ise dogrudan X/Y/Z tusu DRO alanini acar. Yalnizca bir yazi
+        # alanina odaklanilmamisken calisir.
+        "dro_ctrl_gerekli": True,
+        "dro_tuslari": {"X": "x", "Y": "y", "Z": "z"},
+        # Besleme yuzdesi (FRO) tuslari ve adimi
+        "fro_azalt_tus": "F10",
+        "fro_artir_tus": "F11",
+        "fro_adim": 5,                  # her basista % kac degissin
     },
 
     "web": {
         "host": "0.0.0.0",              # mobilden erisim icin
         "port": 8010,
         "tarayici_ac": False,
+    },
+
+    # Is sifiri profilleri: her bicak/malzeme icin kayitli Z sifiri.
+    # Profil, MAKINE koordinatindaki is sifirini saklar (`is_sifiri_makine`);
+    # boylece geri cagirinca ayni fiziksel yukseklige donulur.
+    "profiller": {
+        "aktif": "",
+        "liste": [],
+        # ornek kayit:
+        # {"ad": "6mm duz freze / MDF 18", "takim_boyu": 52.3,
+        #  "is_sifiri_makine": {"X": .., "Y": .., "Z": -78.1},
+        #  "guvenli_z": 20.0, "not": ""}
+    },
+
+    # Yeni G-Code dosyasi izleme
+    "izleme": {
+        "aktif": True,
+        "kok": "",                      # or. "D:\\isler" (bos ise kapali)
+        "derinlik": 4,                   # kac alt klasor asagi taransin
+        "aralik_sn": 5.0,
+        "yeni_sayilir_dk": 120,          # bu kadar once degismis dosyalar "yeni"
     },
 
     "gcode": {
@@ -102,6 +167,27 @@ VARSAYILAN = {
 def varsayilan_yol():
     return os.path.join(os.path.expanduser("~"), ".mach3_kontrol",
                         "ayarlar.json")
+
+
+def _gocur(veri):
+    """Eski ayar dosyalarini yeni surume tasir. (degisti_mi, veri) doner."""
+    surum = veri.get("surum", 1)
+    if surum >= SURUM:
+        return False, veri
+    if surum < 2:
+        # Surum 2: Mach3'un COM otomasyon arayuzunu YALNIZCA "/Automation"
+        # ile baslatildiginda actigi tespit edildi. Elle acilan Mach3'e
+        # baglanmak mumkun olmadigi icin "mach3_baslat: false" calismayan
+        # bir secenektir; eski dosyalarda aciliyor.
+        veri.setdefault("baglanti", {})["mach3_baslat"] = True
+    if surum < 3:
+        # Surum 3: tezgah tabani denetimi eklendi. Degeri OTOMATIK
+        # DOLDURMUYORUZ - yanlis bir taban, gercek bir tabandan daha
+        # tehlikelidir (yanlis guven verir). null birakilir; arayuz
+        # "olculmedi" uyarisi gosterir ve kullanicidan olcmesini ister.
+        veri.setdefault("guvenlik", {}).setdefault("makine_z_taban", None)
+    veri["surum"] = SURUM
+    return True, veri
 
 
 def _birlestir(temel, ustu):
@@ -126,7 +212,11 @@ class Ayarlar:
     def yukle(self):
         try:
             with open(self.yol, "r", encoding="utf-8") as f:
-                self.veri = _birlestir(VARSAYILAN, json.load(f))
+                ham = json.load(f)
+            gocuruldu, ham = _gocur(ham)
+            self.veri = _birlestir(VARSAYILAN, ham)
+            if gocuruldu:
+                self.kaydet()
         except FileNotFoundError:
             self.kaydet()
         except (ValueError, OSError) as e:

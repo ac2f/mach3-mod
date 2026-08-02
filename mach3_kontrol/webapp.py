@@ -226,6 +226,84 @@ def api_sifira_git(veri, ip):
     return DENETLEYICI.sifira_git(eksenler, _istemci(veri))
 
 
+# -- tezgah referansi ----------------------------------------------------
+def api_referans(veri, ip):
+    islem = (veri or {}).get("islem", "durum")
+    if islem == "al":
+        _yetki(veri, ip)
+        v = veri or {}
+        # `degerler` verilirse bulunulan noktanin tezgah koordinati odur
+        # (orn. {"X": 2099}); verilmezse bulunulan nokta tezgah sifiridir.
+        return DENETLEYICI.referans_al(
+            v.get("eksenler") or ("X", "Y", "Z"),
+            degerler=v.get("degerler"), istemci=_istemci(veri))
+    if islem == "birak":
+        _yetki(veri, ip)
+        return DENETLEYICI.referans_birak(_istemci(veri))
+    if islem == "makine_sifirla":
+        # Mach3'un MAKINE koordinatini bulunulan noktada sifirlar (Ref).
+        _yetki(veri, ip)
+        return DENETLEYICI.makine_sifirla(
+            (veri or {}).get("eksenler") or ("X", "Y", "Z"), _istemci(veri))
+    return DENETLEYICI.referans_durumu()
+
+
+# -- besleme override ----------------------------------------------------
+def api_fro(veri, ip):
+    _yetki(veri, ip)
+    return DENETLEYICI.fro_ayarla((veri or {}).get("deger"),
+                                  (veri or {}).get("delta"), _istemci(veri))
+
+
+# -- is sifiri profilleri ------------------------------------------------
+def api_profil_liste(veri, ip):
+    return DENETLEYICI.profiller()
+
+
+def api_profil_kaydet(veri, ip):
+    _yetki(veri, ip)
+    return DENETLEYICI.profil_kaydet((veri or {}).get("ad", ""),
+                                     (veri or {}).get("takim_boyu"),
+                                     (veri or {}).get("not"), _istemci(veri))
+
+
+def api_profil_uygula(veri, ip):
+    _yetki(veri, ip)
+    return DENETLEYICI.profil_uygula(
+        veri["ad"], (veri or {}).get("eksenler") or ("X", "Y", "Z"),
+        _istemci(veri))
+
+
+def api_profil_sil(veri, ip):
+    _yetki(veri, ip)
+    return DENETLEYICI.profil_sil(veri["ad"], _istemci(veri))
+
+
+# -- dosya izleme --------------------------------------------------------
+def api_izleme(veri, ip):
+    islem = (veri or {}).get("islem")
+    if islem == "yoksay":
+        _yetki(veri, ip)
+        DENETLEYICI.izleyici.yoksay((veri or {}).get("yol"))
+    elif islem == "ac":
+        _yetki(veri, ip)
+        yol = veri["yol"]
+        DENETLEYICI.izleyici.onayla(yol)
+        return DENETLEYICI.program_yukle(yol)
+    elif islem == "tara":
+        DENETLEYICI.izleyici.tara()
+    elif islem == "sifirla":
+        _yetki(veri, ip)
+        DENETLEYICI.izleyici.sifirla()
+    return DENETLEYICI.izleyici.durum()
+
+
+# -- is raporu -----------------------------------------------------------
+def api_rapor(veri, ip):
+    d = DENETLEYICI.rapor_verisi(bool((veri or {}).get("son")))
+    return {"rapor": d} if d else {"hata": "Henuz calistirilmis bir is yok"}
+
+
 def api_mdi(veri, ip):
     _yetki(veri, ip)
     return DENETLEYICI.mdi(veri.get("satir", ""), _istemci(veri))
@@ -348,6 +426,14 @@ API = {
     "/api/sifirla": api_sifirla,
     "/api/dro": api_dro,
     "/api/sifira_git": api_sifira_git,
+    "/api/referans": api_referans,
+    "/api/fro": api_fro,
+    "/api/profil/liste": api_profil_liste,
+    "/api/profil/kaydet": api_profil_kaydet,
+    "/api/profil/uygula": api_profil_uygula,
+    "/api/profil/sil": api_profil_sil,
+    "/api/izleme": api_izleme,
+    "/api/rapor": api_rapor,
     "/api/mdi": api_mdi,
     "/api/program/yukle": api_program_yukle,
     "/api/program/bilgi": api_program_bilgi,
@@ -399,6 +485,9 @@ class Isleyici(BaseHTTPRequestHandler):
         if yol == "/olay":
             self._olay_akisi()
             return
+        if yol.startswith("/indir/rapor."):
+            self._rapor_indir(yol.rsplit(".", 1)[-1].lower())
+            return
         if yol == "/":
             yol = "/index.html"
         dosya = os.path.abspath(os.path.join(WEB_DIZIN, yol.lstrip("/")))
@@ -411,6 +500,44 @@ class Isleyici(BaseHTTPRequestHandler):
                 self._gonder(200, f.read(), tur)
         else:
             self._gonder(404, json.dumps({"hata": "bulunamadi"}))
+
+    def _rapor_indir(self, bicim):
+        """/indir/rapor.pdf | .csv | .json -> dosya olarak iner."""
+        from . import rapor as RAP
+        veri = DENETLEYICI.rapor_verisi(son=True)
+        if not veri:
+            self._gonder(404, json.dumps(
+                {"hata": "Henuz calistirilmis bir is yok"}))
+            return
+        try:
+            if bicim == "pdf":
+                govde, tur = RAP.pdf_uret(veri), "application/pdf"
+            elif bicim == "csv":
+                # BOM: Excel'in UTF-8'i dogru acmasi icin
+                govde = ("﻿" + RAP.csv_uret(veri)).encode("utf-8")
+                tur = "text/csv; charset=utf-8"
+            elif bicim == "json":
+                govde = RAP.json_uret(veri).encode("utf-8")
+                tur = "application/json; charset=utf-8"
+            else:
+                self._gonder(404, json.dumps({"hata": "bilinmeyen bicim"}))
+                return
+        except Exception as e:                        # noqa: BLE001
+            traceback.print_exc()
+            self._gonder(500, json.dumps({"hata": str(e)}))
+            return
+        ad = RAP.dosya_adi(veri, bicim)
+        self.send_response(200)
+        self.send_header("Content-Type", tur)
+        self.send_header("Content-Length", str(len(govde)))
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{ad}"')
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(govde)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _olay_akisi(self):
         """SSE: durum (~10 Hz) + yeni gunluk olaylari."""

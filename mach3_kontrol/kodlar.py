@@ -63,6 +63,14 @@ BUTON = {
     "tek_blok":     {"kod": 1004, "aciklama": "Single Block ac/kapa",      "guven": "orta"},
     "reset":        {"kod": 1021, "aciklama": "Reset ac/kapa",             "guven": "orta"},
     "ref_hepsi":    {"kod": 1024, "aciklama": "Ref All Home",              "guven": "dusuk"},
+    # Eksen basina Ref. Home switch'i TANIMLI DEGILSE Mach3 hic hareket
+    # etmeden makine koordinatini bulunulan noktada sifirlar; tanimliysa
+    # eksen switch'i ARAMAYA GIDER. Kodlar kurulumdan kuruluma degisebilir,
+    # `oem_ezme.buton` ile ezilebilir; denetleyici yazma sonrasi makine
+    # DRO'sunu geri okuyup gercekten degisip degismedigini dogrular.
+    "ref_x":        {"kod": 22,   "aciklama": "Ref X (makine sifiri)",     "guven": "dusuk"},
+    "ref_y":        {"kod": 23,   "aciklama": "Ref Y (makine sifiri)",     "guven": "dusuk"},
+    "ref_z":        {"kod": 24,   "aciklama": "Ref Z (makine sifiri)",     "guven": "dusuk"},
     "sifirla_x":    {"kod": 131,  "aciklama": "Zero X",                    "guven": "orta"},
     "sifirla_y":    {"kod": 132,  "aciklama": "Zero Y",                    "guven": "orta"},
     "sifirla_z":    {"kod": 133,  "aciklama": "Zero Z",                    "guven": "orta"},

@@ -3,9 +3,12 @@
 """Teshis araci testleri (Windows disinda da calisir)."""
 
 import os
+import platform
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+WINDOWS = platform.system() == "Windows"
 
 from mach3_kontrol import baglanti as BAG, tani as TANI   # noqa: E402
 
@@ -38,6 +41,8 @@ def test_mach_progidleri_gecer():
 
 def test_windows_disinda_guvenli_doner():
     """Windows'a ozgu sorgular baska platformda cokmemeli."""
+    if WINDOWS:
+        return              # bu test yalnizca Windows DISI davranisi dogrular
     assert BAG.mach3_calisiyor() is None
     assert BAG._pencere_ara("mach3") is None
     assert BAG._surec_ara("mach3.exe") is None
@@ -47,6 +52,10 @@ def test_windows_disinda_guvenli_doner():
 
 
 def test_tani_windows_disinda_temiz_cikar():
+    # DIKKAT: Windows'ta teshis gercekten Mach3'u baslatmaya calisir; test
+    # calistirmak makineyi etkilememeli. Bu yuzden yalnizca Windows disinda.
+    if WINDOWS:
+        return
     assert TANI.calistir() == 1          # "Windows degil" ile duzgun biter
 
 

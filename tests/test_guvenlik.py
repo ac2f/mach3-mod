@@ -59,7 +59,9 @@ def test_dalis_derinligi_siniri():
         g.jog_dogrula("Z", -10.0, 500.0, makine, is_k)       # -35 < -30
         raise AssertionError("derin inis reddedilmeliydi")
     except GUV.GuvenlikHatasi as e:
-        assert any("en derin" in s for s in e.sebepler)
+        # Mesaj artik "IS sifirina gore" oldugunu acikca soyluyor; tezgahi
+        # koruyan denetim ayri (makine_z_taban, bkz. test_taban_*).
+        assert any("elle inis siniri" in s for s in e.sebepler), e.sebepler
 
 
 def test_program_kapsami_limitle_karsilastirilir():

@@ -23,10 +23,12 @@ yutulmaz, kullaniciya bildirilir.
 """
 
 import math
+import os
 import platform
 import queue
 import re
 import struct
+import subprocess
 import threading
 import time
 
@@ -38,6 +40,9 @@ COM_METOTLAR = {
     "DoOEMButton": True, "GetOEMLED": False, "IsMoving": False,
     "LoadFile": False, "StopJog": False, "GetButtonState": False,
     "Message": False,
+    # Mach3 Reset (E-Stop) durumundayken SetOEMDRO SESSIZCE calismaz;
+    # sifirlamanin gercekten olup olmadigini anlamak icin gerekir.
+    "IsEstop": False,
 }
 
 
@@ -48,8 +53,39 @@ class Mach3Hata(Exception):
 # ----------------------------------------------------------------------
 # Mach3 gercekten acik mi?
 # ----------------------------------------------------------------------
-def _pencere_ara(parca="mach3"):
-    """Basliginda `parca` gecen bir pencere varsa basligini doner."""
+def _surec_adi(pid):
+    """PID -> EXE dosya adi (or. 'mach3.exe'); bulunamazsa ''."""
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x1000, False, int(pid))   # QUERY_LIMITED_INFO
+        if not h:
+            return ""
+        try:
+            boyut = ctypes.c_ulong(1024)
+            tampon = ctypes.create_unicode_buffer(1024)
+            if k32.QueryFullProcessImageNameW(h, 0, tampon,
+                                              ctypes.byref(boyut)):
+                return os.path.basename(tampon.value)
+        finally:
+            k32.CloseHandle(h)
+    except Exception:                                 # noqa: BLE001
+        return ""
+    return ""
+
+
+def _pencere_ara(parca="mach3", surec_adi="mach3.exe", pid=None):
+    """Basliginda `parca` gecen pencerenin basligini doner.
+
+    DIKKAT: yalnizca baslik esletmek yanilticidir - "Mach3 ... - Visual
+    Studio Code" gibi ALAKASIZ pencereler de esler ve "Mach3 calisiyor"
+    sanilir. Bu yuzden pencerenin sahibi surecin adi da dogrulanir.
+
+    `pid` verilirse YALNIZCA o surecin penceresi kabul edilir. Bu, yeni
+    baslatilan Mach3'u beklerken sart: aksi halde eskiden kalan baska bir
+    Mach3 ornegi "acildi" sanilir ve onun tukenmis fabrikasina baglanmaya
+    calisilir.
+    """
     if platform.system() != "Windows":
         return None
     try:
@@ -65,8 +101,14 @@ def _pencere_ara(parca="mach3"):
                 tampon = ctypes.create_unicode_buffer(n + 1)
                 user32.GetWindowTextW(hwnd, tampon, n + 1)
                 if parca.lower() in tampon.value.lower():
-                    bulunan.append(tampon.value)
-                    return False
+                    sahip = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(sahip))
+                    uygun = (pid is None or sahip.value == int(pid))
+                    if uygun and (not surec_adi or
+                                  _surec_adi(sahip.value).lower()
+                                  == surec_adi.lower()):
+                        bulunan.append(tampon.value)
+                        return False
             return True
 
         user32.EnumWindows(_her, 0)
@@ -101,38 +143,317 @@ def mach3_calisiyor():
     return _pencere_ara("mach3") or _surec_ara("mach3.exe")
 
 
-# Ust seviye COM nesnesi (Mach4.Document) bazen yalnizca bir "kapi"dir;
-# GetOEMDRO / Code gibi betik metotlari, ondan alinan ayri bir nesnede
-# bulunur. Bilinen erisimci adlari:
+# Ust seviye COM nesnesi (Mach4.Document) yalnizca bir "kapi"dir;
+# GetOEMDRO / Code gibi betik metotlari ondan alinan AYRI bir nesnededir
+# (Mach3'te GetScriptDispatch, dispid 3). Bilinen erisimci adlari:
 BETIK_ADLARI = ("GetScriptDispatch", "GetScript", "ScriptDispatch",
                 "GetDispatch", "Script", "Application", "Document")
+
+
+# ----------------------------------------------------------------------
+# Dusuk seviye COM erisimi
+# ----------------------------------------------------------------------
+# NEDEN: Mach3'un COM nesneleri tip kutuphanesi (TypeLib) KAYITLI DEGIL ve
+# IDispatch::GetTypeInfoCount 0 doner. pywin32'nin dinamik sarmalayicisi bu
+# durumda uye adlarini cozemez: `hasattr(o, "GetOEMDRO")` False verir,
+# `o.GetScriptDispatch()` "Member not found" atar, `o.IsMoving()` ise uyeyi
+# ozellik sanip "'int' object is not callable" hatasi verir.
+# GetIDsOfNames + Invoke ile dogrudan cagirmak bunlarin hepsini asar.
+def _ole(nesne):
+    """CDispatch ya da PyIDispatch farketmeksizin ham IDispatch dondurur."""
+    return getattr(nesne, "_oleobj_", nesne)
+
+
+def _com_mu(nesne):
+    """Gercek bir COM nesnesi mi (yoksa sahte/duck-typed bir nesne mi)?"""
+    return hasattr(_ole(nesne), "GetIDsOfNames")
+
+
+def _dispid(nesne, ad):
+    """Uyenin dispid'i; yoksa None."""
+    try:
+        return _ole(nesne).GetIDsOfNames(ad)
+    except Exception:                                 # noqa: BLE001
+        return None
+
+
+def uye_var(nesne, ad):
+    """`hasattr` yerine kullanilir (yukaridaki nedenle).
+
+    COM olmayan nesnelerde (testler, simulasyon) `hasattr`a duser.
+    """
+    if _com_mu(nesne):
+        return _dispid(nesne, ad) is not None
+    try:
+        return hasattr(nesne, ad)
+    except Exception:                                 # noqa: BLE001
+        return False
 
 
 def betik_nesnesi(nesne):
     """Betik metotlarini tasiyan nesneyi bulur.
 
-    Doner: (nesne, kullanilan_ad). Ust nesnede zaten GetOEMDRO varsa
+    Doner: (ham_IDispatch, kullanilan_ad). Ust nesnede zaten GetOEMDRO varsa
     dogrudan onu doner.
     """
-    if nesne is None or hasattr(nesne, "GetOEMDRO"):
-        return nesne, ""
-    for ad in BETIK_ADLARI:
-        try:
-            uye = getattr(nesne, ad)
-        except Exception:                             # noqa: BLE001
-            continue
-        try:
-            alt = uye() if callable(uye) else uye
-        except Exception:                             # noqa: BLE001
-            continue
-        if alt is None or alt is nesne:
-            continue
-        try:
-            if hasattr(alt, "GetOEMDRO"):
+    if nesne is None:
+        return None, ""
+
+    # COM olmayan nesneler (testler, sahte nesneler): eski getattr yolu.
+    if not _com_mu(nesne):
+        if uye_var(nesne, "GetOEMDRO"):
+            return nesne, ""
+        for ad in BETIK_ADLARI:
+            try:
+                uye = getattr(nesne, ad)
+                alt = uye() if callable(uye) else uye
+            except Exception:                         # noqa: BLE001
+                continue
+            if alt is None or alt is nesne:
+                continue
+            if uye_var(alt, "GetOEMDRO"):
                 return alt, ad
-        except Exception:                             # noqa: BLE001
+        return nesne, ""
+
+    import pythoncom
+    ole = _ole(nesne)
+    if _dispid(ole, "GetOEMDRO") is not None:
+        return ole, ""
+    for ad in BETIK_ADLARI:
+        did = _dispid(ole, ad)
+        if did is None:
             continue
-    return nesne, ""
+        for bayrak in (pythoncom.DISPATCH_METHOD,
+                       pythoncom.DISPATCH_PROPERTYGET):
+            try:
+                alt = ole.Invoke(did, 0, bayrak, True)
+            except Exception:                         # noqa: BLE001
+                continue
+            if alt is None:
+                continue
+            try:
+                alt_ole = alt.QueryInterface(pythoncom.IID_IDispatch)
+            except Exception:                         # noqa: BLE001
+                continue
+            if _dispid(alt_ole, "GetOEMDRO") is not None:
+                return alt_ole, ad
+    return ole, ""
+
+
+class _Mach3Nesne:
+    """Betik nesnesini dispid uzerinden cagiran ince sarmalayici.
+
+    Disaridan bakildiginda sanki `o.GetOEMDRO(800)` diye normal bir COM
+    nesnesiymis gibi kullanilir; iceride her cagri GetIDsOfNames ile bulunan
+    dispid uzerinden Invoke edilir.
+    """
+
+    def __init__(self, ole):
+        self._ole = ole
+        self.dispid = {}
+        for ad in COM_METOTLAR:
+            did = _dispid(ole, ad)
+            if did is not None:
+                self.dispid[ad] = did
+
+    def var(self, ad):
+        return ad in self.dispid
+
+    def _c(self, ad, *args):
+        import pythoncom
+        did = self.dispid.get(ad)
+        if did is None:
+            raise Mach3Hata(f"Mach3 arayuzunde '{ad}' metodu yok")
+        return self._ole.Invoke(did, 0, pythoncom.DISPATCH_METHOD, True, *args)
+
+    # Mach3 betik API'si
+    def GetOEMDRO(self, kod):
+        return self._c("GetOEMDRO", int(kod))
+
+    def SetOEMDRO(self, kod, deger):
+        return self._c("SetOEMDRO", int(kod), float(deger))
+
+    def GetOEMLED(self, kod):
+        return self._c("GetOEMLED", int(kod))
+
+    def DoOEMButton(self, kod):
+        return self._c("DoOEMButton", int(kod))
+
+    def Code(self, satir):
+        return self._c("Code", str(satir))
+
+    def LoadFile(self, yol):
+        return self._c("LoadFile", str(yol))
+
+    def IsMoving(self):
+        return self._c("IsMoving")
+
+    def StopJog(self):
+        return self._c("StopJog")
+
+    def Message(self, metin):
+        return self._c("Message", str(metin))
+
+    def IsEstop(self):
+        return self._c("IsEstop")
+
+
+# ----------------------------------------------------------------------
+# Mach3'u COM otomasyonu icin baslatma
+# ----------------------------------------------------------------------
+# ONEMLI (bu projede uzun sure "baglanti yok" sorununun asil sebebi):
+#
+#   1. Mach3 COM sinif fabrikasini YALNIZCA `/Automation` (ya da COM'un
+#      kendi ekledigi `-Embedding`) anahtariyla baslatildiginda kaydeder.
+#      Kullanicinin elle (cift tiklayarak) actigi Mach3'e HICBIR sekilde
+#      baglanilamaz: Running Object Table'da kaydi yoktur, sinif fabrikasi
+#      da yoktur. Bu yuzden "Mach3 acik, ama baglanti kurulamiyor".
+#
+#   2. Mach3 lisans dosyasini (Mach1Lic.dat) CALISMA DIZININDEN okur. COM
+#      sunucuyu kendisi baslattiginda calisma dizini C:\Windows\System32
+#      olur ve Mach3 "Corrupt install, no license file found. Aborting."
+#      diyerek kapanir; COM da 120 sn sonra 'Server execution failed' verir.
+#      Bu yuzden Mach3'u BIZ, calisma dizini kurulum klasoru olacak sekilde
+#      baslatiriz.
+#
+#   3. Profil verilmezse Mach3 profil secim penceresinde bekler ve yine
+#      sinif fabrikasini kaydetmez; bu yuzden `/p <profil>` gecilir.
+#
+#   4. Kaydedilen sinif fabrikasi TEK KULLANIMLIKTIR (REGCLS_SINGLEUSE):
+#      ilk istemci baglandiktan sonra iptal olur. Yani her Mach3 acilisina
+#      yalnizca BIR istemci baglanabilir; yeniden baglanmak icin Mach3'un
+#      yeniden baslatilmasi gerekir.
+def _kayitli_exe(progid):
+    """ProgID -> LocalServer32 EXE yolu (32-bit kayit defteri gorunumu)."""
+    if platform.system() != "Windows":
+        return ""
+    try:
+        import winreg
+    except ImportError:
+        return ""
+    for gorunum in (winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY):
+        erisim = winreg.KEY_READ | gorunum
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                rf"SOFTWARE\Classes\{progid}\CLSID",
+                                0, erisim) as k:
+                clsid = winreg.QueryValue(k, "")
+            with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    rf"SOFTWARE\Classes\CLSID\{clsid}\LocalServer32",
+                    0, erisim) as k:
+                komut = winreg.QueryValue(k, "")
+        except OSError:
+            continue
+        yol = (komut or "").strip()
+        if yol.startswith('"'):
+            yol = yol[1:].split('"', 1)[0]
+        else:
+            yol = yol.split(" /")[0].split(" -")[0].strip()
+        if yol and os.path.isfile(yol):
+            return yol
+    return ""
+
+
+def _sinif_yok(e):
+    """Hata 'ProgID kayitli degil' (0x800401F3) mi?"""
+    m = str(e)
+    return "invalid class string" in m.lower() or "-2147221005" in m
+
+
+def _kayit_yok_mesaji(progid):
+    """Mach3'un COM kaydi bulunamadiginda gosterilecek aciklama."""
+    if struct.calcsize("P") * 8 == 64:
+        return ("Mach3'un COM kaydi bulunamadi. En olasi sebep 32/64 bit "
+                "uyusmazligi: Mach3 32-bit'tir, kullandiginiz Python 64-bit. "
+                "32-bit Python kurun. Ayrinti: python main.py --tani")
+    return (f"Mach3'un COM kaydi bulunamadi (ProgID '{progid}'). Mach3'u bir "
+            "kez yonetici olarak calistirmak kaydi tazeler. "
+            "Ayrinti: python main.py --tani")
+
+
+def mach3_exe_bul(ayar=None):
+    """Mach3.exe'nin tam yolu: ayar -> kayit defteri -> yaygin konumlar."""
+    ayar = ayar or {}
+    elle = (ayar.get("mach3_exe") or "").strip()
+    if elle:
+        return elle if os.path.isfile(elle) else ""
+    yol = _kayitli_exe(ayar.get("progid") or "Mach4.Document")
+    if yol:
+        return yol
+    for aday in (r"C:\Mach3\Mach3.exe", r"C:\Program Files\Mach3\Mach3.exe",
+                 r"C:\Program Files (x86)\Mach3\Mach3.exe"):
+        if os.path.isfile(aday):
+            return aday
+    return ""
+
+
+def mach3_otomasyon_baslat(exe, profil="", bekle=90.0, progid="Mach4.Document",
+                           gunluk=None):
+    """Mach3'u COM otomasyonuna hazir sekilde baslatir ve nesneyi dondurur.
+
+    Calisma dizini EXE'nin klasoru yapilir (lisans dosyasi icin sart).
+
+    Acilis beklenirken Dispatch ile YOKLAMA YAPILMAZ: Mach3 henuz sinif
+    fabrikasini kaydetmemisken Dispatch, COM'un ikinci bir Mach3 kopyasini
+    (yanlis calisma dizininde) baslatmasina yol acar ve 120 saniyelik COM
+    zaman asimina takilir. Bunun yerine Mach3'un penceresi gorunene kadar
+    beklenir, sonra tek sefer baglanilir.
+    """
+    import win32com.client
+    if not exe or not os.path.isfile(exe):
+        raise Mach3Hata(
+            "Mach3.exe bulunamadi. Ayarlar > Baglanti > 'mach3_exe' alanina "
+            "tam yolu yazin (or. C:\\Mach3\\Mach3.exe).")
+    komut = [exe]
+    if profil:
+        komut += ["/p", profil]
+    komut.append("/Automation")
+    if gunluk is not None:
+        gunluk.append("baslatiliyor: " + " ".join(komut))
+    try:
+        surec = subprocess.Popen(komut, cwd=os.path.dirname(exe) or None)
+    except OSError as e:
+        raise Mach3Hata(f"Mach3 baslatilamadi: {e}")
+
+    bitis = time.time() + bekle
+    acildi = False
+    while time.time() < bitis:
+        if surec.poll() is not None:
+            # Baslattigimiz kopya cikti. Iki ayri sebep, iki ayri cozum:
+            if mach3_calisiyor():
+                raise Mach3Hata(
+                    "Zaten calisan baska bir Mach3 ornegi var; Mach3 tek "
+                    "ornek oldugu icin yeni kopya hemen kapandi. Calisan "
+                    "Mach3'u tamamen kapatip tekrar deneyin.")
+            raise Mach3Hata(
+                "Mach3 acilir acilmaz kapandi. En olasi sebep lisans "
+                "dosyasinin (Mach1Lic.dat) bulunamamasi ya da profil "
+                f"'{profil or '(yok)'}' adinin yanlis olmasidir. Mach3'u "
+                "elle acip calistigini dogrulayin.")
+        # YALNIZCA kendi baslattigimiz surecin penceresini kabul et; yoksa
+        # eskiden kalan bir Mach3'un tukenmis fabrikasina baglanmaya
+        # calisiriz.
+        if _pencere_ara("mach3", "mach3.exe", pid=surec.pid):
+            acildi = True
+            break
+        time.sleep(0.5)
+    if not acildi:
+        raise Mach3Hata(
+            f"Mach3 {bekle:.0f} sn icinde acilmadi. Profil secimi ya da bir "
+            "uyari penceresi bekliyor olabilir.")
+
+    time.sleep(1.5)                       # sinif fabrikasi kaydi icin pay
+    son = None
+    for _ in range(3):
+        try:
+            return win32com.client.Dispatch(progid)
+        except Exception as e:                        # noqa: BLE001
+            son = e
+            time.sleep(1.0)
+    raise Mach3Hata(
+        "Mach3 acildi ama COM arayuzune baglanilamadi. Mach3'un bu acilisina "
+        f"baska bir program baglanmis olabilir. [{son}]")
 
 
 def _kelimeler(satir):
@@ -191,6 +512,20 @@ class TemelBaglanti:
     def jog_durdur(self):
         raise NotImplementedError
 
+    def estop(self):
+        """Mach3 Reset/E-Stop durumunda mi? Bilinmiyorsa None."""
+        return None
+
+    def referansli(self):
+        """Makine koordinati tezgahin sifirina gore mi?
+
+        Gercek Mach3'te referans switch'i olup olmadigini disaridan
+        guvenilir sekilde anlayamayiz; bu yuzden False doneriz ve operator
+        tezgah referansini kendisi alir. Simulasyonda makine koordinati
+        tanim geregi tezgah sifirindan baslar.
+        """
+        return False
+
 
 # ======================================================================
 # COM (gercek Mach3)
@@ -213,7 +548,10 @@ class _Isci(threading.Thread):
         try:
             self.nesne = self._kur()
         except Exception as e:                        # noqa: BLE001
-            self.hata = f"{type(e).__name__}: {e}"
+            # Mach3Hata zaten kullaniciya donuk bir aciklama; tur adiyla
+            # tekrar onune eklemeyiz.
+            self.hata = (str(e) if isinstance(e, Mach3Hata)
+                         else f"{type(e).__name__}: {e}")
         finally:
             self.hazir.set()
 
@@ -257,8 +595,11 @@ class COMBaglanti(TemelBaglanti):
         super().__init__(ayar)
         self.progid = (self.ayar.get("progid") or "Mach4.Document")
         self.yedekler = list(self.ayar.get("yedek_progid") or [])
-        # False (varsayilan): yalnizca ZATEN ACIK olan Mach3'e baglan.
-        self.mach3_baslat = bool(self.ayar.get("mach3_baslat", False))
+        # Elle acilan Mach3'e baglanmak MUMKUN DEGIL (yukaridaki uzun nota
+        # bakin), bu yuzden varsayilan olarak Mach3'u biz baslatiriz.
+        self.mach3_baslat = bool(self.ayar.get("mach3_baslat", True))
+        self.profil = (self.ayar.get("profil") or "").strip()
+        self.betik_yolu = ""
         self._isci = None
 
     # -- yasam dongusu ---------------------------------------------------
@@ -276,90 +617,87 @@ class COMBaglanti(TemelBaglanti):
         self.betik_yolu = ""
 
         def _betik(o):
-            """Betik metotlari ayri bir nesnedeyse ona gec."""
+            """Betik metotlari ayri bir nesnededir; ona gecip sarmala."""
             alt, ad = betik_nesnesi(o)
             if ad:
                 self.betik_yolu = ad
                 hatalar.append(f"betik nesnesi: {ad}()")
-            return alt
+            sarmal = _Mach3Nesne(alt)
+            if not sarmal.var("GetOEMDRO"):
+                raise Mach3Hata(
+                    "Mach3'un COM nesnesine ulasildi ama betik metotlari "
+                    "(GetOEMDRO) bulunamadi. Ayrinti: python main.py --tani")
+            return sarmal
 
         def _kur():
             import win32com.client
-            # 1) Calisan ornege baglanmayi dene (ROT uzerinden).
-            #    NOT: Cogu EXE tabanli COM sunucusu kendini Running Object
-            #    Table'a KAYDETMEZ; bu yuzden GetActiveObject, Mach3 acik
-            #    olsa bile basarisiz olabilir. Bu bir hata degil, normaldir -
-            #    asagida sureç tespitiyle telafi edilir.
-            # Mach3 kendini ROT'a her zaman ayni anda kaydetmez; birkac kez
-            # kisa aralikla denemek pratikte fark yaratiyor.
-            for deneme in range(3):
+            # ONEMLI SIRA: Dispatch YALNIZCA Mach3 calisiyorken denenir.
+            # Mach3 kapaliyken Dispatch, COM'un Mach3'u yanlis calisma
+            # dizininde baslatmasina yol acar; Mach3 lisans dosyasini
+            # bulamayip kapanir ve cagri 120 sn askida kalir.
+            if mach3_calisiyor():
+                # Yedek ProgID'ler zaten kayitli olmayabilir; "kayit yok"
+                # sonucuna ancak ADAYLARIN HEPSI oyle derse variriz.
+                hepsi_kayit_yok = True
                 for ad in adaylar:
                     try:
-                        return _betik(win32com.client.GetActiveObject(ad))
+                        return _betik(win32com.client.Dispatch(ad))
+                    except Mach3Hata:
+                        raise
                     except Exception as e:            # noqa: BLE001
-                        if deneme == 0:
-                            hatalar.append(f"{ad} (ROT): {e}")
-                if deneme < 2:
-                    time.sleep(0.4)
+                        hatalar.append(f"{ad} (Dispatch): {e}")
+                        if not _sinif_yok(e):
+                            hepsi_kayit_yok = False
+                if hepsi_kayit_yok:
+                    raise Mach3Hata(_kayit_yok_mesaji(self.progid))
+                raise Mach3Hata(
+                    "Mach3 acik ama COM arayuzu kullanilamiyor. Mach3 "
+                    "otomasyon arayuzunu YALNIZCA '/Automation' anahtariyla "
+                    "baslatildiginda acar; elle (cift tiklayarak) acilan "
+                    "Mach3'e baglanilamaz. Ayrica her Mach3 acilisina "
+                    "yalnizca bir istemci baglanabilir. COZUM: Mach3'u "
+                    "tamamen kapatin ve bu programi yeniden baslatin; "
+                    "Mach3'u kendisi dogru sekilde acacaktir.")
 
-            # 2) Mach3 gercekten calisiyor mu? Calisiyorsa Dispatch guvenlidir:
-            #    Mach3 tek-ornek (single instance) bir sunucudur, yeni kopya
-            #    acmaz, var olana baglanir. Calismiyorsa YENI Mach3 baslatma
-            #    riski vardir - bu yuzden kullanici acikca izin vermedikce
-            #    denemeyiz.
-            acik = mach3_calisiyor()
-            if not acik and not self.mach3_baslat:
+            # Mach3 kapali: izin varsa BIZ baslatalim (dogru calisma dizini,
+            # profil ve /Automation ile).
+            if not self.mach3_baslat:
                 raise Mach3Hata(
-                    "Mach3 calismiyor gibi gorunuyor (ne penceresi ne de "
-                    "mach3.exe sureci bulundu). Once Mach3'u acin. "
-                    "Mach3 acik oldugu halde bu mesaji aliyorsaniz "
-                    "'python main.py --tani' calistirin.")
-            if acik:
-                hatalar.append(f"calisan Mach3 bulundu: {acik}")
-            son = None
-            for ad in adaylar:
-                try:
-                    return _betik(win32com.client.Dispatch(ad))
-                except Exception as e:                # noqa: BLE001
-                    hatalar.append(f"{ad} (Dispatch): {e}")
-                    son = e
-            # "Invalid class string" (0x800401F3) = ProgID kayit defterinde
-            # bulunamadi. Mach3 acikken bunu aliyorsak en olasi sebep,
-            # 64-bit Python'un 32-bit Mach3'un COM kaydini gorememesidir.
-            sinif_yok = "invalid class string" in str(son).lower() or \
-                        "-2147221005" in str(son)
-            if sinif_yok and struct.calcsize("P") * 8 == 64 and acik:
+                    "Mach3 calismiyor ve otomatik baslatma kapali. "
+                    "Ayarlar > Baglanti > 'mach3_baslat' secenegini acin "
+                    "(ya da --mach3-baslat ile calistirin).")
+            exe = mach3_exe_bul(self.ayar)
+            if not exe:
                 raise Mach3Hata(
-                    "Mach3 calisiyor ama COM kaydi bulunamadi. En olasi "
-                    "sebep 32/64 bit uyusmazligi: Mach3 32-bit'tir, "
-                    "kullandiginiz Python 64-bit. 32-bit Python kurup onunla "
-                    "calistirin. Ayrinti icin: python main.py --tani")
-            if "server execution failed" in str(son).lower() and acik:
-                raise Mach3Hata(
-                    "Mach3 acik ama COM sunucusu baslatilamadi ('Server "
-                    "execution failed'). Genelde yetki uyusmazligidir: Mach3 "
-                    "ile bu programi AYNI yetkide calistirin (ikisi de "
-                    "yonetici, ya da ikisi de degil). Ayrinti: "
-                    "python main.py --tani")
-            raise Mach3Hata(
-                "COM nesnesi olusturulamadi. ProgID yanlis olabilir "
-                "(Ayarlar > Baglanti) veya Mach3 ile bu program farkli "
-                "yetkilerde calisiyordur. Ayrinti icin: python main.py --tani"
-                + (f" [{son}]" if son else ""))
+                    "Mach3.exe bulunamadi (kayit defterinde de yok). "
+                    "Ayarlar > Baglanti > 'mach3_exe' alanina tam yolu "
+                    "yazin, or. C:\\Mach3\\Mach3.exe")
+            hatalar.append(f"Mach3 baslatiliyor: {exe}")
+            return _betik(mach3_otomasyon_baslat(
+                exe, self.profil, progid=self.progid, gunluk=hatalar))
 
+        # Mach3'u kendimiz baslatacaksak acilis uzun surer (profil yukleme,
+        # ekran cizimi); 15 sn yetmiyordu.
+        bekle = float(self.ayar.get("acilis_zaman_asimi_sn", 120))
         self._isci = _Isci(_kur)
         self._isci.start()
-        self._isci.hazir.wait(15)
+        self._isci.hazir.wait(bekle)
         if self._isci.nesne is None:
-            self.son_hata = (self._isci.hata or "; ".join(hatalar)
-                             or "Mach3 COM nesnesi olusturulamadi")
+            if not self._isci.hazir.is_set():
+                self.son_hata = (f"Mach3 {bekle:.0f} sn icinde hazir olmadi "
+                                 "(profil secimi ya da bir uyari penceresi "
+                                 "bekliyor olabilir)")
+            else:
+                self.son_hata = (self._isci.hata or "; ".join(hatalar)
+                                 or "Mach3 COM nesnesi olusturulamadi")
             self._isci.kapat()
             self._isci = None
-            raise Mach3Hata(
-                f"Mach3'e baglanilamadi. Mach3 acik mi? ({self.son_hata})")
+            raise Mach3Hata(f"Mach3'e baglanilamadi: {self.son_hata}")
 
+        # DIKKAT: `hasattr` bu nesnelerde calismaz (tip bilgisi yok);
+        # yetenek yoklamasi dispid uzerinden yapilir.
         self._yetenek = {ad: self._isci.cagir(
-            lambda o, a=ad: hasattr(o, a)) for ad in COM_METOTLAR}
+            lambda o, a=ad: o.var(a)) for ad in COM_METOTLAR}
         eksik = [a for a, zorunlu in COM_METOTLAR.items()
                  if zorunlu and not self._yetenek.get(a)]
         if eksik:
@@ -411,6 +749,14 @@ class COMBaglanti(TemelBaglanti):
             return True
         return False
 
+    def estop(self):
+        if not self.destekler("IsEstop"):
+            return None
+        try:
+            return bool(self._isci.cagir(lambda o: o.IsEstop()))
+        except Exception:                             # noqa: BLE001
+            return None
+
 
 # ======================================================================
 # Simulasyon (Mach3 olmadan)
@@ -441,6 +787,7 @@ class SimulasyonBaglanti(TemelBaglanti):
         self._dur = threading.Event()
         self._is = None
         self.yuklu_dosya = ""
+        self._program_satirlari = []
         self._bekle_bitis = 0.0
         self._yetenek = {ad: True for ad in COM_METOTLAR}
 
@@ -540,14 +887,26 @@ class SimulasyonBaglanti(TemelBaglanti):
             self.duraklatildi = True
         elif kod == 1000:                   # cycle start
             self.duraklatildi = False
+            self._programi_kuyrukla()       # yuklu dosya varsa calistir
         elif kod == 1002:                   # stop
             self.duraklatildi = False
             with self._kilit:
                 self._kuyruk.clear()
-        elif kod in (131, 132, 133, 134):   # zero X/Y/Z/A
+        elif kod in (131, 132, 133, 134):   # zero X/Y/Z/A (is sifiri)
             eksen = {131: "X", 132: "Y", 133: "Z", 134: "A"}[kod]
             with self._kilit:
                 self.ofset[eksen] = self.konum[eksen]
+        elif kod in (22, 23, 24, 25, 1024):  # Ref (MAKINE sifiri)
+            # Home switch'i olmayan kurulum taklit edilir: eksen hareket
+            # etmez, makine koordinati bulunulan noktada sifirlanir. Is
+            # ofseti makineye gore sakli oldugu icin is DRO'su da kayar -
+            # Mach3'teki davranisin aynisi.
+            eksenler = ({22: ["X"], 23: ["Y"], 24: ["Z"], 25: ["A"]}
+                        .get(kod, ["X", "Y", "Z", "A"]))
+            with self._kilit:
+                for eksen in eksenler:
+                    self.ofset[eksen] -= self.konum[eksen]
+                    self.konum[eksen] = 0.0
 
     def kod(self, satir):
         """Cok satirli MDI destegi (satir satir yorumlanir)."""
@@ -600,7 +959,30 @@ class SimulasyonBaglanti(TemelBaglanti):
         self._hedef_ekle(hedef, feed)
 
     def dosya_yukle(self, yol):
+        """Dosyayi yukler ve satirlarini cycle start icin hazir tutar.
+
+        Onceden yalnizca dosya ADI saklaniyordu; bu yuzden simulasyonda
+        "program calistir" hicbir sey hareket ettirmiyordu ve sure/ilerleme
+        gibi olculer yalnizca gercek makinede denenebiliyordu. Artik
+        simulasyon programi gercekten isliyor.
+        """
         self.yuklu_dosya = str(yol)
+        self._program_satirlari = []
+        try:
+            with open(yol, "r", encoding="utf-8", errors="replace") as f:
+                self._program_satirlari = [s for s in f.read().splitlines()
+                                           if s.strip()]
+        except OSError:
+            pass
+
+    def _programi_kuyrukla(self):
+        satirlar = getattr(self, "_program_satirlari", None)
+        if not satirlar:
+            return False
+        for s in satirlar:
+            self._satir_isle(s)
+        self._program_satirlari = []      # tek seferlik
+        return True
 
     def hareket_ediyor(self):
         with self._kilit:
@@ -609,6 +991,14 @@ class SimulasyonBaglanti(TemelBaglanti):
     def jog_durdur(self):
         with self._kilit:
             self._kuyruk.clear()
+        return True
+
+    def estop(self):
+        return False                      # sanal tezgah her zaman hazir
+
+    def referansli(self):
+        # Sanal tezgahin makine koordinati 0'dan baslar ve tezgah sifiriyla
+        # ayni yerdedir; ayrica referans almaya gerek yoktur.
         return True
 
 
