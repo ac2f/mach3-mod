@@ -22,6 +22,7 @@ Ciktiyi oldugu gibi paylasabilirsiniz; makineye ozel bir bilgi icermez.
 
 import ctypes
 import platform
+import re
 import struct
 import sys
 
@@ -49,11 +50,23 @@ def _yonetici_mi():
         return None
 
 
-def _progid_ara():
-    """HKEY_CLASSES_ROOT altinda icinde 'mach' gecen ProgID'leri listeler.
+# Yalnizca GERCEKTEN Mach ailesine ait ProgID'ler: "Mach3.Document",
+# "Mach4.Document" gibi. "IAS.SdoMachine" veya
+# "MicrosoftEdgeUpdate.CoreMachineClass" gibi icinde "machine" gecen alakasiz
+# Windows siniflari ELENIR (yoksa yanlislikla onlara baglaniriz).
+_PROGID_RE = re.compile(r"^mach\d*\.", re.I)
 
-    Dogru ProgID'yi bulmanin en hizli yolu budur: Mach3 kurulumu kendini
-    buraya kaydeder.
+
+def _progid_ara(gorunum=None):
+    """Kayit defterindeki Mach ProgID'lerini listeler.
+
+    gorunum: 32 | 64 | None(=surecin kendi gorunumu)
+
+    NEDEN ONEMLI: 32-bit bir uygulamanin (Mach3 32-bit'tir) COM kaydi
+    `HKLM\\Software\\Classes\\Wow6432Node` altina yazilir. 64-bit bir Python
+    sureci kayit defterinin 64-bit gorunumune baktigi icin bu kaydi
+    **goremez** ve "Invalid class string" hatasi alir. Bu yuzden her iki
+    gorunum de ayri ayri taranir.
     """
     if platform.system() != "Windows":
         return []
@@ -61,28 +74,74 @@ def _progid_ara():
         import winreg
     except ImportError:
         return []
+    erisim = winreg.KEY_READ
+    if gorunum == 32:
+        erisim |= winreg.KEY_WOW64_32KEY
+    elif gorunum == 64:
+        erisim |= winreg.KEY_WOW64_64KEY
+
     bulunan = []
-    try:
-        kok = winreg.ConnectRegistry(None, winreg.HKEY_CLASSES_ROOT)
-        i = 0
-        while True:
-            try:
-                ad = winreg.EnumKey(kok, i)
-            except OSError:
-                break
-            i += 1
-            if "mach" not in ad.lower() or "." not in ad:
-                continue
-            clsid = ""
-            try:
-                with winreg.OpenKey(kok, ad + r"\CLSID") as k:
-                    clsid = winreg.QueryValue(k, "")
-            except OSError:
-                pass
-            bulunan.append((ad, clsid))
-    except Exception as e:                            # noqa: BLE001
-        print(f"  (kayit defteri taranamadi: {e})")
+    for kok, alt in ((winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Classes"),
+                     (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Classes")):
+        try:
+            with winreg.OpenKey(kok, alt, 0, erisim) as k:
+                i = 0
+                while True:
+                    try:
+                        ad = winreg.EnumKey(k, i)
+                    except OSError:
+                        break
+                    i += 1
+                    if not _PROGID_RE.match(ad):
+                        continue
+                    clsid = ""
+                    try:
+                        with winreg.OpenKey(k, ad + r"\CLSID", 0, erisim) as c:
+                            clsid = winreg.QueryValue(c, "")
+                    except OSError:
+                        pass
+                    if (ad, clsid) not in bulunan:
+                        bulunan.append((ad, clsid))
+        except OSError:
+            continue
     return bulunan
+
+
+def _surec_32bit_mi(pid):
+    """Verilen surec 64-bit Windows uzerinde 32-bit mi calisiyor?"""
+    try:
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x1000, False, int(pid))   # QUERY_LIMITED_INFO
+        if not h:
+            return None
+        try:
+            wow = ctypes.c_int()
+            if not k32.IsWow64Process(h, ctypes.byref(wow)):
+                return None
+            return bool(wow.value)
+        finally:
+            k32.CloseHandle(h)
+    except Exception:                                 # noqa: BLE001
+        return None
+
+
+def _mach3_pid():
+    """Calisan Mach3.exe surecinin PID'i."""
+    if platform.system() != "Windows":
+        return None
+    import subprocess
+    try:
+        cikti = subprocess.run(
+            ["tasklist", "/fo", "csv", "/nh"], capture_output=True,
+            text=True, timeout=15, creationflags=0x08000000).stdout
+    except Exception:                                 # noqa: BLE001
+        return None
+    for satir in (cikti or "").splitlines():
+        if "mach3.exe" in satir.lower():
+            parca = [p.strip('" ') for p in satir.split('","')]
+            if len(parca) > 1 and parca[1].isdigit():
+                return int(parca[1])
+    return None
 
 
 def calistir(ayarlar=None):
@@ -125,6 +184,11 @@ def calistir(ayarlar=None):
     surec = BAG._surec_ara("mach3.exe")
     _durum(bool(pencere), f"pencere: {pencere or 'bulunamadi'}")
     _durum(bool(surec), f"surec  : {surec or 'bulunamadi'}")
+    pid = _mach3_pid()
+    mach3_32 = _surec_32bit_mi(pid) if pid else None
+    if pid:
+        print(f"  Mach3 PID {pid} · "
+              f"{'32 bit' if mach3_32 else '64 bit' if mach3_32 is False else 'bit genisligi okunamadi'}")
     if not (pencere or surec):
         print("  -> Mach3 kapali gorunuyor. Once Mach3'u acin.")
         print("     (Mach3 acik ve yonetici olarak calisiyorsa, bu programi")
@@ -132,29 +196,40 @@ def calistir(ayarlar=None):
         print("      listesinde gorunmeyebilir.)")
 
     # ---------------------------------------------------------------- 4
-    _yaz("4) Kayitli Mach ProgID'leri (HKEY_CLASSES_ROOT)")
-    progidler = _progid_ara()
-    if progidler:
-        for ad, clsid in progidler:
-            print(f"  {ad:<28} {clsid}")
+    py_64 = struct.calcsize("P") * 8 == 64
+    _yaz("4) Kayitli Mach ProgID'leri (her iki kayit defteri gorunumu)")
+    p32 = _progid_ara(32)
+    p64 = _progid_ara(64)
+    for etiket, liste in (("32-bit gorunum", p32), ("64-bit gorunum", p64)):
+        if liste:
+            for ad, clsid in liste:
+                print(f"  [{etiket}] {ad:<22} {clsid}")
+        else:
+            print(f"  [{etiket}] Mach ProgID yok")
+    print()
+    print("  Ayarlardaki ProgID : " + str(b_ayar.get("progid")))
+
+    # En kritik teshis: 32-bit kayit + 64-bit Python = goremez
+    bit_uyusmazligi = bool(p32) and not p64 and py_64
+    if bit_uyusmazligi:
         print()
-        print("  Ayarlardaki ProgID : " + str(b_ayar.get("progid")))
-        adlar = [a for a, _ in progidler]
-        if b_ayar.get("progid") not in adlar:
-            print("  -> DIKKAT: ayarlardaki ProgID bu listede YOK.")
-            print("     Yukaridakilerden birini Ayarlar > Baglanti'ya yazin.")
-    else:
-        _durum(False, "Mach ile ilgili ProgID bulunamadi.")
-        print("     Mach3'un COM sunucusu kayitli olmayabilir. Mach3'u bir")
-        print("     kez YONETICI olarak calistirmak genelde kaydi tamamlar.")
+        print("  >>> SORUN BULUNDU: Mach3'un COM kaydi YALNIZCA 32-bit")
+        print("      gorunumde. Calistirdiginiz Python 64-bit oldugu icin bu")
+        print("      kaydi goremiyor -> 'Invalid class string'.")
+    elif not p32 and not p64:
+        print()
+        print("  >>> Mach3'un COM sunucusu HIC kayitli degil.")
 
     # ---------------------------------------------------------------- 5
     _yaz("5) Baglanti denemeleri")
     import win32com.client
+    # SADECE gercek Mach ProgID'leri denenir. (Onceki surumde 'machine'
+    # gecen alakasiz Windows siniflari da deneniyordu ve bunlardan birine
+    # baglanip yanlis 'basarili' raporu uretiliyordu.)
     adaylar = []
     for a in ([b_ayar.get("progid")] + list(b_ayar.get("yedek_progid") or [])
-              + [ad for ad, _ in progidler]):
-        if a and a not in adaylar:
+              + [ad for ad, _ in p32 + p64]):
+        if a and _PROGID_RE.match(a) and a not in adaylar:
             adaylar.append(a)
 
     nesne = None
@@ -184,20 +259,43 @@ def calistir(ayarlar=None):
         _yaz("SONUC")
         print("  Mach3'un COM arayuzune ULASILAMADI.")
         print()
-        print("  Sirasiyla deneyin:")
-        print("   1. Mach3 ile bu programi AYNI yetkide calistirin")
-        print("      (Mach3 yoneticiyse: cmd'yi 'Yonetici olarak calistir').")
-        print("   2. Yukaridaki 4. adimda listelenen ProgID'yi")
-        print("      Ayarlar > Baglanti alanina yazin.")
-        print("   3. Mach3'u bir kez yonetici olarak acip kapatin")
-        print("      (COM sunucu kaydini tazeler).")
-        print("   4. Bu ciktinin tamamini paylasin.")
+        if bit_uyusmazligi or (py_64 and (pencere or surec) and not p64):
+            print("  EN OLASI SEBEP: 32/64 bit uyusmazligi.")
+            print("  Mach3 32-bit bir programdir; COM kaydi 32-bit kayit")
+            print("  defteri gorunumundedir. 64-bit Python bunu goremez.")
+            print()
+            print("  COZUM - 32-bit Python kurun (yan yana durabilirler):")
+            print("   1. python.org/downloads/windows -> 'Windows installer")
+            print("      (32-bit)' surumunu indirin (or. 3.12).")
+            print("   2. Kurulumda 'Add to PATH' YERINE ozel dizin secin,")
+            print("      or. C:\\Python312-32")
+            print("   3. C:\\Python312-32\\python.exe -m pip install pywin32")
+            print("   4. C:\\Python312-32\\python.exe main.py --tani")
+            print("      (once teshis, sonra: ... main.py)")
+        else:
+            print("  Sirasiyla deneyin:")
+            print("   1. Mach3 ile bu programi AYNI yetkide calistirin")
+            print("      (Mach3 yoneticiyse: cmd'yi 'Yonetici olarak calistir').")
+            print("   2. Mach3'u bir kez yonetici olarak acip kapatin")
+            print("      (COM sunucu kaydini tazeler).")
+            print("   3. 4. adimda ProgID hic gorunmuyorsa Mach3 kurulumu")
+            print("      COM sunucusunu kaydetmemis olabilir; Mach3'u")
+            print("      yeniden kurmayi deneyin.")
+        print()
+        print("  Bu ciktinin tamamini paylasabilirsiniz.")
         return 2
 
     # ---------------------------------------------------------------- 6
     _yaz(f"6) Baglanti kuruldu: {kazanan}")
-    for ad in BAG.COM_METOTLAR:
-        _durum(hasattr(nesne, ad), f"metot {ad}")
+    metotlar = {ad: hasattr(nesne, ad) for ad in BAG.COM_METOTLAR}
+    for ad, var in metotlar.items():
+        _durum(var, f"metot {ad}")
+    if not metotlar.get("GetOEMDRO"):
+        _yaz("SONUC")
+        print("  Baglanilan COM nesnesi Mach3 DEGIL (GetOEMDRO metodu yok).")
+        print(f"  '{kazanan}' baska bir uygulamaya ait olabilir.")
+        print("  Ayarlar > Baglanti'daki ProgID'yi kontrol edin.")
+        return 2
 
     print()
     print("  DRO okuma denemesi (is koordinatlari):")

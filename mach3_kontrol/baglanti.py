@@ -26,6 +26,7 @@ import math
 import platform
 import queue
 import re
+import struct
 import threading
 import time
 
@@ -273,6 +274,17 @@ class COMBaglanti(TemelBaglanti):
                 except Exception as e:                # noqa: BLE001
                     hatalar.append(f"{ad} (Dispatch): {e}")
                     son = e
+            # "Invalid class string" (0x800401F3) = ProgID kayit defterinde
+            # bulunamadi. Mach3 acikken bunu aliyorsak en olasi sebep,
+            # 64-bit Python'un 32-bit Mach3'un COM kaydini gorememesidir.
+            sinif_yok = "invalid class string" in str(son).lower() or \
+                        "-2147221005" in str(son)
+            if sinif_yok and struct.calcsize("P") * 8 == 64 and acik:
+                raise Mach3Hata(
+                    "Mach3 calisiyor ama COM kaydi bulunamadi. En olasi "
+                    "sebep 32/64 bit uyusmazligi: Mach3 32-bit'tir, "
+                    "kullandiginiz Python 64-bit. 32-bit Python kurup onunla "
+                    "calistirin. Ayrinti icin: python main.py --tani")
             raise Mach3Hata(
                 "COM nesnesi olusturulamadi. ProgID yanlis olabilir "
                 "(Ayarlar > Baglanti) veya Mach3 ile bu program farkli "

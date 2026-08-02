@@ -124,16 +124,29 @@ python main.py --tani
 
 Teshis, zinciri bastan sona dener ve nerede koptugunu gosterir: Python
 32/64 bit, yonetici yetkisi, pywin32, **Mach3 gercekten calisiyor mu**
-(pencere + surec), **kayit defterindeki Mach ProgID'leri**, her ProgID icin
-baglanti denemesi ve son olarak DRO okuma testi. En sik uc sebep:
+(pencere + surec + bit genisligi), **kayit defterindeki Mach ProgID'leri
+(hem 32 hem 64 bit gorunumde)**, her ProgID icin baglanti denemesi ve son
+olarak DRO okuma testi. En sik uc sebep:
 
-1. **Yetki farki** — Mach3 yonetici olarak calisiyor, bu program degil
+1. **32/64 bit uyusmazligi — en yaygini.** Mach3 **32-bit** bir programdir;
+   COM kaydini kayit defterinin 32-bit gorunumune (`Wow6432Node`) yazar.
+   **64-bit Python bu kaydi goremez** ve `Invalid class string` hatasi verir.
+   Cozum: **32-bit Python kurun** (64-bit'in yaninda durabilir):
+
+   ```
+   python.org/downloads/windows -> "Windows installer (32-bit)"
+   C:\Python312-32 gibi ayri bir dizine kurun
+   C:\Python312-32\python.exe -m pip install pywin32
+   C:\Python312-32\python.exe main.py --tani
+   C:\Python312-32\python.exe main.py
+   ```
+
+2. **Yetki farki** — Mach3 yonetici olarak calisiyor, bu program degil
    (ya da tersi). Ikisi birbirini goremez. `cmd`'yi "Yonetici olarak
    calistir" ile acin.
-2. **ProgID farkli** — teshisin 4. adiminda listelenen adi Ayarlar >
-   Baglanti alanina yazin.
-3. **COM sunucusu kayitli degil** — Mach3'u bir kez yonetici olarak acip
-   kapatmak genelde kaydi tamamlar.
+3. **COM sunucusu kayitli degil** — teshisin 4. adiminda iki gorunumde de
+   hicbir Mach ProgID'i yoksa, Mach3'u bir kez yonetici olarak acip kapatmak
+   genelde kaydi tamamlar.
 
 Teshis ciktisi makineye ozel gizli bilgi icermez, oldugu gibi paylasabilirsiniz.
 
