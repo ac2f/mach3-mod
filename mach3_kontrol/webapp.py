@@ -475,9 +475,12 @@ def _yerel_adres(port):
 
 
 def calistir(port=None, host=None, ac=None, ayarlar_yolu=None,
-             baglan=True):
+             baglan=True, tur=None):
     global AYARLAR, DENETLEYICI
     AYARLAR = AY.Ayarlar(ayarlar_yolu)
+    if tur:
+        # Yalnizca bu calistirma icin (diske yazilmaz) - bkz. cli.main
+        AYARLAR.veri["baglanti"]["tur"] = tur
     DENETLEYICI = DEN.Denetleyici(AYARLAR)
 
     w = AYARLAR["web"]

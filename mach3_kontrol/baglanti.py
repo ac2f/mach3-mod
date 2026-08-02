@@ -44,6 +44,62 @@ class Mach3Hata(Exception):
     pass
 
 
+# ----------------------------------------------------------------------
+# Mach3 gercekten acik mi?
+# ----------------------------------------------------------------------
+def _pencere_ara(parca="mach3"):
+    """Basliginda `parca` gecen bir pencere varsa basligini doner."""
+    if platform.system() != "Windows":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        bulunan = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        def _her(hwnd, _):
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n:
+                tampon = ctypes.create_unicode_buffer(n + 1)
+                user32.GetWindowTextW(hwnd, tampon, n + 1)
+                if parca.lower() in tampon.value.lower():
+                    bulunan.append(tampon.value)
+                    return False
+            return True
+
+        user32.EnumWindows(_her, 0)
+        return bulunan[0] if bulunan else None
+    except Exception:                                 # noqa: BLE001
+        return None
+
+
+def _surec_ara(ad="mach3.exe"):
+    """Calisan surecler arasinda `ad` varsa satirini doner."""
+    if platform.system() != "Windows":
+        return None
+    import subprocess
+    try:
+        cikti = subprocess.run(
+            ["tasklist", "/fo", "csv", "/nh"], capture_output=True,
+            text=True, timeout=15,
+            creationflags=0x08000000).stdout          # CREATE_NO_WINDOW
+    except Exception:                                 # noqa: BLE001
+        return None
+    for satir in (cikti or "").splitlines():
+        if ad.lower() in satir.lower():
+            return satir.split(",")[0].strip('" ')
+    return None
+
+
+def mach3_calisiyor():
+    """Mach3 acik mi? Aciksa tanimlayici bir metin, degilse None.
+
+    Once pencere basligina, sonra surec adina bakar (biri yeterli).
+    """
+    return _pencere_ara("mach3") or _surec_ara("mach3.exe")
+
+
 def _kelimeler(satir):
     s = re.sub(r"\(.*?\)", "", satir).split(";", 1)[0]
     return {h.upper(): float(v) for h, v in _WORD_RE.findall(s)}
@@ -185,32 +241,43 @@ class COMBaglanti(TemelBaglanti):
 
         def _kur():
             import win32com.client
-            # 1) ONCE ZATEN CALISAN Mach3'e baglan. Dogrudan Dispatch
-            #    kullanmak, Mach3 kapaliyken YENI bir Mach3 baslatabilir;
-            #    ikinci bir ornek hareket denetleyicisini ele gecirmeye
-            #    calisir ve profil secim ekrani ile takilir. Bu yuzden
-            #    varsayilan davranis "yalnizca acik olana bagla".
+            # 1) Calisan ornege baglanmayi dene (ROT uzerinden).
+            #    NOT: Cogu EXE tabanli COM sunucusu kendini Running Object
+            #    Table'a KAYDETMEZ; bu yuzden GetActiveObject, Mach3 acik
+            #    olsa bile basarisiz olabilir. Bu bir hata degil, normaldir -
+            #    asagida sureç tespitiyle telafi edilir.
             for ad in adaylar:
                 try:
                     return win32com.client.GetActiveObject(ad)
                 except Exception as e:                # noqa: BLE001
-                    hatalar.append(f"{ad} (calisan): {e}")
-            if not self.mach3_baslat:
+                    hatalar.append(f"{ad} (ROT): {e}")
+
+            # 2) Mach3 gercekten calisiyor mu? Calisiyorsa Dispatch guvenlidir:
+            #    Mach3 tek-ornek (single instance) bir sunucudur, yeni kopya
+            #    acmaz, var olana baglanir. Calismiyorsa YENI Mach3 baslatma
+            #    riski vardir - bu yuzden kullanici acikca izin vermedikce
+            #    denemeyiz.
+            acik = mach3_calisiyor()
+            if not acik and not self.mach3_baslat:
                 raise Mach3Hata(
-                    "Calisan Mach3 bulunamadi. Once Mach3'u acin. "
-                    "(Mach3 aciksa: bu programi Mach3 ile AYNI yetkide "
-                    "calistirin - biri yonetici digeri degilse birbirlerini "
-                    "goremezler. Yine de olmuyorsa Ayarlar > Baglanti'dan "
-                    "'Mach3 kapaliysa baslat' secenegini acin.)")
-            # 2) Kullanici acikca izin verdiyse Mach3'u baslatmayi dene
+                    "Mach3 calismiyor gibi gorunuyor (ne penceresi ne de "
+                    "mach3.exe sureci bulundu). Once Mach3'u acin. "
+                    "Mach3 acik oldugu halde bu mesaji aliyorsaniz "
+                    "'python main.py --tani' calistirin.")
+            if acik:
+                hatalar.append(f"calisan Mach3 bulundu: {acik}")
             son = None
             for ad in adaylar:
                 try:
                     return win32com.client.Dispatch(ad)
                 except Exception as e:                # noqa: BLE001
-                    hatalar.append(f"{ad} (baslat): {e}")
+                    hatalar.append(f"{ad} (Dispatch): {e}")
                     son = e
-            raise son or Mach3Hata("ProgID bulunamadi")
+            raise Mach3Hata(
+                "COM nesnesi olusturulamadi. ProgID yanlis olabilir "
+                "(Ayarlar > Baglanti) veya Mach3 ile bu program farkli "
+                "yetkilerde calisiyordur. Ayrinti icin: python main.py --tani"
+                + (f" [{son}]" if son else ""))
 
         self._isci = _Isci(_kur)
         self._isci.start()

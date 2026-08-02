@@ -116,6 +116,29 @@ baslat/duraklat/durdur ve jog kullanirsiniz.
 
 ---
 
+### "Baglanti yok" diyorsa
+
+```bash
+python main.py --tani
+```
+
+Teshis, zinciri bastan sona dener ve nerede koptugunu gosterir: Python
+32/64 bit, yonetici yetkisi, pywin32, **Mach3 gercekten calisiyor mu**
+(pencere + surec), **kayit defterindeki Mach ProgID'leri**, her ProgID icin
+baglanti denemesi ve son olarak DRO okuma testi. En sik uc sebep:
+
+1. **Yetki farki** — Mach3 yonetici olarak calisiyor, bu program degil
+   (ya da tersi). Ikisi birbirini goremez. `cmd`'yi "Yonetici olarak
+   calistir" ile acin.
+2. **ProgID farkli** — teshisin 4. adiminda listelenen adi Ayarlar >
+   Baglanti alanina yazin.
+3. **COM sunucusu kayitli degil** — Mach3'u bir kez yonetici olarak acip
+   kapatmak genelde kaydi tamamlar.
+
+Teshis ciktisi makineye ozel gizli bilgi icermez, oldugu gibi paylasabilirsiniz.
+
+---
+
 ## Ne yapar? (detay)
 
 ### 1) Guvenlik katmani

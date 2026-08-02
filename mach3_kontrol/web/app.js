@@ -156,13 +156,20 @@ function durumCiz(d) {
   // ---- serit
   const serit = $("#serit");
   const mesajlar = [];
+  let kritik = false;
+  if (!d.bagli) {
+    // Baglanti hatasi kucuk yazida kaybolmamali: sebebi burada gosterilir.
+    mesajlar.push("BAGLANTI YOK" + (d.hata ? " — " + d.hata : "") +
+      "   ·   teshis icin: python main.py --tani");
+    kritik = true;
+  }
   if (S.kilitli || kl.aktif) mesajlar.push("KILIT ACIK — yalnizca jog tuslari gecerli");
   if (d.jog && d.jog.aktif) mesajlar.push(`JOG ${d.jog.eksen}${d.jog.yon > 0 ? "+" : "−"}`);
-  if (!d.guvenlik.limitler_dogrulandi)
+  if (d.bagli && !d.guvenlik.limitler_dogrulandi)
     mesajlar.push("Yumusak limitler dogrulanmadi — Guvenlik sekmesinden kontrol edin");
   serit.textContent = mesajlar.join("   ·   ");
   serit.className = "serit" + (mesajlar.length ? "" : " gizli") +
-    (S.kilitli || kl.aktif ? " tehlike" : "");
+    (kritik || S.kilitli || kl.aktif ? " tehlike" : "");
 
   guvenlikDurumCiz(d);
 }

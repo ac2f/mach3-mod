@@ -69,13 +69,23 @@ def main(argv=None):
     ap.add_argument("--sure", metavar="DOSYA", help="Sure tahmini yaz ve cik")
     ap.add_argument("--sira", metavar="DOSYA",
                     help="Kesim sirasi listesini yaz ve cik")
+    ap.add_argument("--tani", action="store_true",
+                    help="Baglanti teshisi calistir ve cik "
+                         "('baglanti yok' sorununda bunu calistirin)")
     a = ap.parse_args(argv)
 
     ayar = AY.Ayarlar(a.ayar)
+    # DIKKAT: --simulasyon / --com yalnizca BU calistirma icin gecerlidir;
+    # ayar dosyasina yazilmaz. (Aksi halde bir kez simulasyonda denedikten
+    # sonra program kalici olarak simulasyonda kalir.)
     if a.simulasyon:
-        ayar.guncelle({"baglanti": {"tur": "simulasyon"}})
+        ayar.veri["baglanti"]["tur"] = "simulasyon"
     elif a.com:
-        ayar.guncelle({"baglanti": {"tur": "com"}})
+        ayar.veri["baglanti"]["tur"] = "com"
+
+    if a.tani:
+        from . import tani
+        return tani.calistir(ayar)
 
     if a.sure:
         _sure_yaz(a.sure, ayar)
@@ -87,7 +97,9 @@ def main(argv=None):
     from . import webapp
     webapp.calistir(port=a.port, host=a.host,
                     ac=True if a.tarayici_ac else None,
-                    ayarlar_yolu=a.ayar, baglan=a.baglan)
+                    ayarlar_yolu=a.ayar, baglan=a.baglan,
+                    tur=("simulasyon" if a.simulasyon
+                         else "com" if a.com else None))
     return 0
 
 
