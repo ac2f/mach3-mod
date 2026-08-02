@@ -279,6 +279,38 @@ def api_profil_sil(veri, ip):
     return DENETLEYICI.profil_sil(veri["ad"], _istemci(veri))
 
 
+# -- kalibrasyon (dijital kumpasla) --------------------------------------
+# Mach3'un COM arayuzu "Steps per unit"/"Backlash" degerlerini ne okur ne
+# yazar; bu uc olcumu yurutur, hesabi yapar ve Mach3'te girilecek degerleri
+# dondurur. Son yazma islemi operatordedir.
+def api_kalibrasyon(veri, ip):
+    v = veri or {}
+    islem = v.get("islem", "durum")
+    if islem == "durum":
+        return DENETLEYICI.kalibrasyon_durum()
+    _yetki(veri, ip)
+    if islem == "basla":
+        return DENETLEYICI.kalibrasyon_basla(
+            v.get("eksen", "X"), v.get("tur", "olcek"), v.get("mesafe"),
+            v.get("feed"), int(v.get("yon", 1)), v.get("on_yaklasma"),
+            v.get("tekrar"), v.get("adim_basi"), _istemci(veri))
+    if islem == "adim":
+        return DENETLEYICI.kalibrasyon_adim(v.get("adim", ""), _istemci(veri))
+    if islem == "olcum":
+        return DENETLEYICI.kalibrasyon_olcum(
+            v.get("olculen"), v.get("a"), v.get("b"), _istemci(veri))
+    if islem == "bitir":
+        return DENETLEYICI.kalibrasyon_bitir(_istemci(veri))
+    if islem == "iptal":
+        return DENETLEYICI.kalibrasyon_iptal(_istemci(veri))
+    if islem == "uygula":
+        return DENETLEYICI.kalibrasyon_uygula(v.get("deger"), _istemci(veri))
+    if islem == "ayar":
+        return DENETLEYICI.kalibrasyon_ayar_kaydet(v.get("yama") or {},
+                                                   _istemci(veri))
+    return {"hata": f"Bilinmeyen kalibrasyon islemi: {islem}"}
+
+
 # -- dosya izleme --------------------------------------------------------
 def api_izleme(veri, ip):
     islem = (veri or {}).get("islem")
@@ -432,6 +464,7 @@ API = {
     "/api/profil/kaydet": api_profil_kaydet,
     "/api/profil/uygula": api_profil_uygula,
     "/api/profil/sil": api_profil_sil,
+    "/api/kalibrasyon": api_kalibrasyon,
     "/api/izleme": api_izleme,
     "/api/rapor": api_rapor,
     "/api/mdi": api_mdi,

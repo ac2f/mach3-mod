@@ -17,7 +17,7 @@ import copy
 import json
 import os
 
-SURUM = 3
+SURUM = 4
 
 VARSAYILAN = {
     "surum": SURUM,
@@ -153,6 +153,27 @@ VARSAYILAN = {
         "yeni_sayilir_dk": 120,          # bu kadar once degismis dosyalar "yeni"
     },
 
+    # ------------------------------------------------------------------
+    # KALIBRASYON (dijital kumpasla)
+    # Mach3'un COM arayuzu "Steps per unit" ve "Backlash" degerlerini NE
+    # OKUR NE DE YAZAR; bunlar yalnizca Mach3'un kendi pencerelerinden
+    # degistirilebilir. Burada tutulanlar:
+    #   adim_basi - Mach3 > Config > Motor Tuning'deki GUNCEL deger (elle
+    #               girilir). Yeni degeri hesaplayabilmek icin gereklidir.
+    #   bosluk    - olculen backlash (Mach3 > Config > Backlash'e yazilir)
+    # Ikisi de yalnizca KAYIT amaclidir; makineyi bu dosya degil, Mach3'e
+    # yazdiginiz degerler kalibre eder.
+    "kalibrasyon": {
+        "adim_basi": {"X": None, "Y": None, "Z": None},   # steps / mm
+        "bosluk": {"X": None, "Y": None, "Z": None},      # mm
+        "olcum_mesafe": 100.0,          # kumpas araligina sigmali (mm)
+        "olcum_feed": 300.0,            # yavas ve tekrarlanabilir (mm/dk)
+        "on_yaklasma": 5.0,             # bosluk alma mesafesi (mm)
+        "tekrar": 3,                    # kac olcum ortalanacak
+        "kumpas_cozunurluk": 0.01,      # dijital kumpasin adimi (mm)
+        "gecmis": [],                   # uygulanan kalibrasyonlarin kaydi
+    },
+
     "gcode": {
         "son_klasor": "",
         "sure_katsayi": 1.0,            # tahmini sureyi kalibre etmek icin
@@ -186,6 +207,11 @@ def _gocur(veri):
         # tehlikelidir (yanlis guven verir). null birakilir; arayuz
         # "olculmedi" uyarisi gosterir ve kullanicidan olcmesini ister.
         veri.setdefault("guvenlik", {}).setdefault("makine_z_taban", None)
+    if surum < 4:
+        # Surum 4: kumpasla kalibrasyon bolumu eklendi. Adim sayilarini
+        # TAHMIN ETMIYORUZ - yanlis bir "mevcut deger" hesabi da bozar.
+        # None birakilir; arayuz Mach3'ten okumanizi ister.
+        veri.setdefault("kalibrasyon", {})
     veri["surum"] = SURUM
     return True, veri
 

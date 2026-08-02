@@ -122,6 +122,55 @@ def test_ayar_kaydetme():
     cagir("/api/ayarlar", {"yama": {"guvenlik": {"guvenli_z": 20.0}}})
 
 
+def _kalibrasyon_bekle():
+    """Kalibrasyon hareketi bitene kadar durumu yoklar."""
+    for _ in range(120):
+        d = cagir("/api/kalibrasyon", {"islem": "durum"})
+        o = d.get("oturum")
+        if not o or (not o["mesgul"] and o["asama"] != "hareket"):
+            return d
+        time.sleep(0.1)
+    raise AssertionError("kalibrasyon hareketi bitmedi")
+
+
+def test_kalibrasyon_akisi():
+    """Olc → hesapla → Mach3'e girilecek degeri dondur (simulasyonda)."""
+    kur()
+    d = cagir("/api/kalibrasyon", {
+        "islem": "basla", "eksen": "X", "tur": "olcek", "mesafe": 10.0,
+        "feed": 3000.0, "on_yaklasma": 2.0, "tekrar": 1,
+        "adim_basi": 1600.0})
+    assert d["oturum"]["asama"] == "hazir", d
+
+    cagir("/api/kalibrasyon", {"islem": "adim", "adim": "bosluk_al"})
+    d = _kalibrasyon_bekle()
+    assert d["oturum"]["asama"] == "okuma_a", d["oturum"]
+
+    # Hareket bitmeden okuma kabul edilmemeli
+    cagir("/api/kalibrasyon", {"islem": "adim", "adim": "olc"})
+    d = _kalibrasyon_bekle()
+    assert d["oturum"]["asama"] == "okuma_b", d["oturum"]
+
+    # Kumpas 10.04 mm okudu: Mach3'e yazilacak yeni adim sayisi hesaplanir
+    d = cagir("/api/kalibrasyon", {"islem": "olcum", "a": 0, "b": 10.04})
+    s = d["son_sonuc"]
+    assert abs(s["hata_mm"] - 0.04) < 1e-6
+    assert abs(s["yeni_adim_basi"] - 1600.0 * 10.0 / 10.04) < 0.001
+    t = s["talimat"][0]
+    assert "Motor Tuning" in t["pencere"] and t["alanlar"][0]["ad"] == "Steps per"
+
+    r = cagir("/api/kalibrasyon", {"islem": "uygula"})
+    assert r["ok"] and r["uyarilar"]
+    assert r["kalibrasyon"]["ayar"]["adim_basi"]["X"] == s["yeni_adim_basi"]
+    # Olay akisina yalnizca OZET gider (talimat/gecmis kilobaytlar tutar)
+    ozet = cagir("/api/durum")["kalibrasyon"]
+    assert set(ozet) == {"ayar_ozet", "sonuc_var", "oturum"}
+    assert ozet["sonuc_var"] is True
+    # Olcek degistigi icin referans dusmus olmali
+    assert "X" in cagir("/api/durum")["referans"]["eksik"]
+    cagir("/api/referans", {"islem": "al", "eksenler": ["X", "Y", "Z"]})
+
+
 def test_olay_akisi():
     kur()
     with urllib.request.urlopen(f"http://127.0.0.1:{_PORT}/olay",

@@ -42,6 +42,7 @@
   <button class="sekme" data-sekme="kontrol">Kontrol</button>
   <button class="sekme" data-sekme="program">Program &amp; Sira</button>
   <button class="sekme" data-sekme="rapor">Rapor</button>
+  <button class="sekme" data-sekme="kalibrasyon">Kalibrasyon</button>
   <button class="sekme" data-sekme="guvenlik">Guvenlik</button>
   <button class="sekme" data-sekme="ayarlar">Ayarlar</button>
   <button class="sekme" data-sekme="gunluk">Gunluk</button>
@@ -421,6 +422,164 @@
       <div class="rapor-ozet" id="raporOzet">Henuz calistirilmis bir is yok.</div>
       <table class="tablo" id="raporBloklar"></table>
       <div class="rapor-olay" id="raporOlaylar"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================= KALIBRASYON -->
+<!-- Dijital kumpasla adim sayisi (Steps per unit) ve bosluk (backlash)
+     olcumu. Mach3'un COM arayuzu bu degerleri NE OKUR NE YAZAR; program
+     olcer + hesaplar, Mach3'e yazacak degerleri acikca gosterir. -->
+<section class="sayfa" id="sayfa-kalibrasyon">
+  <div class="kal-duzen">
+
+    <!-- ---------------- SOL: sihirbaz ---------------- -->
+    <div class="kart kal-sol">
+      <div class="kart-bas">
+        <h2>Kumpasli kalibrasyon</h2>
+        <span class="ipucu-kucuk">olc → hesapla → Mach3'e yaz</span>
+      </div>
+
+      <p class="ipucu">
+        Mach3'un COM arayuzunde <b>“Steps per unit”</b> ve <b>“Backlash”</b>
+        degerlerini okuyan/yazan bir cagri <b>yoktur</b>. Bu yuzden program
+        hareketi ve hesabi yapar; <b>Mach3'un hangi kutusuna hangi sayiyi
+        yazacaginizi</b> sag tarafta tam olarak soyler. Son yazma islemi
+        sizdedir.
+      </p>
+
+      <div class="kal-secim">
+        <div class="kal-alan">
+          <label>Eksen</label>
+          <div class="secim" id="kalEksen">
+            <button class="aktif" data-e="X">X</button>
+            <button data-e="Y">Y</button>
+            <button data-e="Z">Z</button>
+          </div>
+        </div>
+        <div class="kal-alan">
+          <label>Olcum turu</label>
+          <div class="secim" id="kalTur">
+            <button class="aktif" data-t="olcek">Olcek (adim/mm)</button>
+            <button data-t="bosluk">Bosluk</button>
+            <button data-t="dogrulama">Dogrulama</button>
+          </div>
+        </div>
+        <div class="kal-alan">
+          <label>Olcum yonu</label>
+          <div class="secim" id="kalYon">
+            <button class="aktif" data-y="1">+ yon</button>
+            <button data-y="-1">− yon</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="kal-tur-not" id="kalTurNot"></div>
+
+      <div class="kal-form">
+        <div class="satir"><label>Olcum mesafesi</label>
+          <input type="number" id="kalMesafe" class="alan dar" step="1" min="1">
+          <span class="birim">mm — kumpas araliginiza sigmali</span></div>
+        <div class="satir"><label>Olcum beslemesi</label>
+          <input type="number" id="kalFeed" class="alan dar" step="50" min="1">
+          <span class="birim">mm/dk — yavas olsun, tekrarlanabilir olur</span></div>
+        <div class="satir"><label>On yaklasma</label>
+          <input type="number" id="kalYaklasma" class="alan dar" step="0.5" min="0.1">
+          <span class="birim">mm — vida boslugunu olcum yonunde toplar</span></div>
+        <div class="satir"><label>Tekrar sayisi</label>
+          <input type="number" id="kalTekrar" class="alan dar" step="1" min="1" max="20">
+          <span class="birim">olcum ortalanir</span></div>
+        <div class="satir"><label>Kumpas cozunurlugu</label>
+          <input type="number" id="kalCozunurluk" class="alan dar" step="0.001" min="0.001">
+          <span class="birim">mm — genelde 0.01</span></div>
+      </div>
+
+      <div class="ayirac"></div>
+
+      <div class="kal-adimbasi">
+        <div class="kart-bas"><h3>Mach3'teki GUNCEL adim sayisi</h3></div>
+        <p class="ipucu">
+          <b>Mach3 → Config → Motor Tuning and Setup → &lt;eksen&gt; Axis</b>
+          penceresindeki <b>“Steps per”</b> kutusunda yazan degeri buraya
+          girin. Yeni deger bundan hesaplanir. Bos birakirsaniz program
+          yalnizca <b>carpan</b> verir (mevcut degerinizi onunla carparsiniz).
+        </p>
+        <div class="kal-ab" id="kalAdimBasiSatirlar"></div>
+        <div class="satir">
+          <button class="dugme hayalet kucuk" id="kalAyarKaydet">
+            Degerleri kaydet</button>
+          <span class="ipucu-kucuk">bu kayit makineyi degistirmez,
+            yalnizca hesap icin tutulur</span>
+        </div>
+      </div>
+
+      <div class="ayirac"></div>
+
+      <div class="satir uc">
+        <button class="dugme genis" id="kalBasla">Kalibrasyonu baslat</button>
+        <button class="dugme hayalet" id="kalIptal">Oturumu kapat</button>
+      </div>
+
+      <!-- adim adim yonerge paneli (JS doldurur) -->
+      <div class="kal-akis gizli" id="kalAkis"></div>
+    </div>
+
+    <!-- ---------------- SAG: sonuc + Mach3 talimati ---------------- -->
+    <div class="kal-sag">
+
+      <div class="kart">
+        <div class="kart-bas"><h2>Olcum sonucu</h2></div>
+        <div class="kal-sonuc" id="kalSonuc">Henuz olcum yapilmadi.</div>
+      </div>
+
+      <div class="kart vurgu-kart">
+        <div class="kart-bas">
+          <h2>Mach3'e girilecek degerler</h2>
+          <button class="mini" id="kalKopyala">Kopyala</button>
+        </div>
+        <div class="kal-talimat" id="kalTalimat">
+          Olcum bitince Mach3'te acilacak pencere, kutu adi ve yazilacak sayi
+          burada gorunur.
+        </div>
+        <div class="satir">
+          <button class="dugme genis gizli" id="kalUygula">
+            Mach3'e girdim — kaydet</button>
+        </div>
+        <div class="satir gizli" id="kalElleSatir">
+          <label>Mach3'e yazdigim deger</label>
+          <input type="number" id="kalElleDeger" class="alan dar" step="0.0001">
+          <span class="birim">steps/mm</span>
+        </div>
+      </div>
+
+      <div class="kart">
+        <div class="kart-bas"><h2>Kayitli degerler</h2></div>
+        <table class="tablo" id="kalKayitli"></table>
+        <div class="kart-bas ust-bosluk"><h3>Gecmis</h3></div>
+        <div class="kal-gecmis" id="kalGecmis"></div>
+      </div>
+
+      <div class="kart">
+        <div class="kart-bas"><h2>Kumpasi nasil baglarim?</h2></div>
+        <ol class="ipucu kal-nasil">
+          <li>Kumpasin <b>sabit cenesini</b> tezgaha (koprü/tabla — hareket
+            ETMEYEN parcaya) mengene, miknatis ya da cift tarafli bantla
+            sabitleyin.</li>
+          <li><b>Hareketli cenesini</b> spindle/kizak tarafina (hareket EDEN
+            parcaya) dayayin. Ikisi de olcum ekseni dogrultusunda olmali.</li>
+          <li>Kumpasin <b>derinlik cubugu</b> uzun mesafeler icin daha
+            kullanislidir: cubugu sabit bir kose blokla temas ettirin.</li>
+          <li>Olcum boyunca cene ile temasin kopmadigindan ve kumpasin
+            egilmedigindan emin olun; <b>egilme = sahte sapma</b>.</li>
+          <li>Olcum mesafesi kumpas araligindan (genelde 150 mm) buyuk
+            olamaz. 100 mm ideal: uzun olcu, kucuk oransal hata.</li>
+        </ol>
+        <div class="uyari-kutu">
+          <b>Adim sayisini degistirdikten sonra</b> tezgah referansini
+          yeniden alin ve yumusak limitler ile tezgah tabanini dogrulayin:
+          makine koordinatinin olcegi degismistir.
+        </div>
+      </div>
     </div>
   </div>
 </section>

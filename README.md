@@ -331,6 +331,84 @@ yukseklik** geri gelir. Tezgah sekmesindeki profil kutusundan *kaydet* /
 
 ---
 
+## Kalibrasyon: dijital kumpasla hassas ayar
+
+*Kalibrasyon* sekmesi, **“100 mm dedim, gercekten kac mm gitti?”** sorusunu
+olcup makinenizi mikron duzeyinde ayarlamanizi saglar.
+
+> **Onemli:** Mach3'un COM/OLE arayuzunde `Steps per unit` (motor adim
+> sayisi) ve `Backlash` degerlerini **okuyan ya da yazan bir cagri yoktur** —
+> bu degerler Mach3'un profil dosyasindadir ve yalnizca Mach3'un kendi
+> pencerelerinden degistirilebilir. Bu yuzden is bolusumu soyledir:
+>
+> * **program**: hareketi yapar, olcumu toplar, ortalar, yeni degeri hesaplar
+> * **siz**: sag paneldeki sayiyi Mach3'un ilgili kutusuna yazarsiniz
+>
+> Sag panel **hangi menu → hangi pencere → hangi kutu → hangi sayi**
+> bilgisini eksiksiz verir ve “Kopyala” ile panoya alinir.
+
+### Olcum nasil yapilir
+
+1. **Kumpasi baglayin.** Sabit cenesi tezgaha (hareket *etmeyen* parcaya),
+   hareketli cenesi kizak/spindle tarafina (hareket *eden* parcaya) gelecek
+   sekilde, olcum ekseni dogrultusunda sabitleyin.
+2. **Mach3'teki guncel “Steps per” degerini girin**
+   (*Config → Motor Tuning and Setup → &lt;eksen&gt; Axis*). Bos birakirsaniz
+   program yalnizca **carpan** verir; mevcut degerinizi onunla carparsiniz.
+3. **Baslat** → **“Boslugu al”**: eksen once ters yone, sonra olcum yonune
+   `on_yaklasma` kadar gider. Boylece vida/kayis boslugu olcum yonunde
+   toplanir ve olcege karismaz.
+4. **Kumpasi sifirlayin** (ya da A okumasini yazin).
+5. **“Olcum hareketini yap”** → eksen tam `olcum_mesafe` kadar gider.
+6. **B okumasini girin.** Gercek mesafe = |B − A|.
+7. Tekrar sayisi kadar yineleyin; program **ortalar** ve olcumler arasindaki
+   **yayilimi** kumpas cozunurluguyle karsilastirip guvenilir olup olmadigini
+   soyler.
+
+### Hesap
+
+```
+yeni_adim_basi = eski_adim_basi x (komut / olculen)
+```
+
+Mach3 `adim_basi x komut` kadar darbe gonderir; olculen mesafe komuttan
+**buyukse** adim sayisi fazladir ve **kucultulmelidir**. Ornek: 1600 adim/mm
+ile 100 mm komuta 100.5 mm gidiyorsa yeni deger `1600 x 100/100.5 = 1592.04`.
+
+### Uc olcum turu
+
+| Tur | Ne olcer | Mach3'te nereye yazilir |
+|---|---|---|
+| **Olcek** | Eksenin gercek adim/mm degeri | `Config → Motor Tuning and Setup → <eksen> Axis → Steps per` (sonra **SAVE AXIS SETTINGS**) |
+| **Bosluk** | Yon degistirirken kaybolan hareket (backlash) | `Config → Backlash → <eksen>` + *Backlash Enabled* |
+| **Dogrulama** | Yeni deger gercekten isledi mi | — (yalnizca rapor; tolerans disindaysa uyarir) |
+
+Bosluk olcumunde ayni noktaya bir kez olcum yonunden, bir kez **ters
+yonden** gelinir; iki okuma arasindaki fark o eksenin kayip hareketidir.
+
+### Guvenlik
+
+* Kalibrasyon hareketleri **normal jog gibi** guvenlik katmanindan gecer:
+  tezgah referansi zorunlu, yumusak limit, tezgah tabani, adim ve besleme
+  siniri denetlenir. Bir hareket reddedilirse oturum basa doner ve **hangi
+  limitin asildigi** yazilir.
+* Olcum mesafesi + on yaklasma toplami `max_jog_adim` degerini asiyorsa,
+  **olcumun ortasinda degil baslarken** reddedilir.
+* Kumpas okumasi komuttan %50'den fazla sapiyorsa kabul edilmez — bu bir
+  kalibrasyon sapmasi degil, kaymis bir kumpas ya da yanlis girilmis bir
+  sayidir.
+* **“Mach3'e girdim”** dedikten sonra o eksenin **tezgah referansi dusurulur**:
+  adim sayisi degisince makine koordinatinin olcegi de degisir, eski referansla
+  olculen limitler artik yanlis yeri gosterir. Yeniden referans alin ve tezgah
+  tabanini dogrulayin.
+
+Kaydedilen degerler (`adim_basi`, `bosluk`) ve uygulanan her kalibrasyonun
+gecmisi ayar dosyasinda tutulur. Bu kayit **makineyi degistirmez** — makineyi
+Mach3'e yazdiginiz deger kalibre eder; kayit yalnizca bir sonraki hesabin
+girdisidir.
+
+---
+
 ## Klavye kisayollari
 
 | Tus | Islem |
@@ -525,6 +603,7 @@ python main.py --sira kesim.tap    # blok blok liste (sure dahil)
 |---|---|
 | **Kontrol** | DRO (is + makine), jog padi (adim / basili tut), hassas hareket, kaydirmali sifirlama, klavye kilidi, MDI |
 | **Program & Sira** | Dosya secme, numarali kesim sirasi, takim yolu onizlemesi, sure tahmini, guvenlik denetimi, baslat/feed hold/durdur |
+| **Kalibrasyon** | Kumpasla adim/mm (Steps per unit) ve bosluk olcumu, Mach3'e girilecek degerler |
 | **Guvenlik** | Yumusak limitler, hareket sinirlari, guncel guvenlik durumu |
 | **Ayarlar** | Baglanti (COM/simulasyon, ProgID), makine (hiz/ivme/sifirlama yontemi), **OEM kod haritasi** |
 | **Gunluk** | Gonderilen her komut, her guvenlik reddi, her acil durdurma |
@@ -571,7 +650,13 @@ sure tahminini makineye hic dokunmadan denemek icin kullanin.
     "pin": "……"
   },
   "klavye": { "kilit_acilista": false, "odak_bekcisi": true,
-              "odak_pencere_baslik": "Mach3" }
+              "odak_pencere_baslik": "Mach3" },
+  "kalibrasyon": {
+    "adim_basi": { "X": null, "Y": null, "Z": null },  // Mach3'teki Steps per
+    "bosluk":    { "X": null, "Y": null, "Z": null },  // olculen backlash (mm)
+    "olcum_mesafe": 100, "olcum_feed": 300, "on_yaklasma": 5,
+    "tekrar": 3, "kumpas_cozunurluk": 0.01
+  }
 }
 ```
 
@@ -595,6 +680,7 @@ mach3-mod/
 │   ├── klavye_kilidi.py           # Windows klavye hooku + odak bekcisi
 │   ├── gcode.py                   # blok ayristirma, kapsam, bloktan baslatma
 │   ├── sure.py                    # kesim suresi tahmini
+│   ├── kalibrasyon.py             # kumpasla adim/bosluk olcumu + Mach3 talimati
 │   ├── denetleyici.py             # hepsini birlestiren beyin
 │   ├── webapp.py                  # bagimliliksiz web sunucusu + API + SSE
 │   └── web/                       # arayuz (index.html · app.css · app.js)
@@ -613,6 +699,7 @@ python tests/test_gcode.py         # blok ayristirma, yay kapsami, bloktan basla
 python tests/test_guvenlik.py      # limit reddi, kalp atisi, kontrol kilidi
 python tests/test_sure.py          # sure modeli
 python tests/test_denetleyici.py   # uctan uca (simulasyon): jog, sifirlama, baslatma
+python tests/test_kalibrasyon.py   # kumpas olcumu, adim/mm hesabi, Mach3 talimati
 python tests/test_web.py           # HTTP API + olay akisi
 ```
 
@@ -628,6 +715,9 @@ python tests/test_web.py           # HTTP API + olay akisi
   Mach3'un kendi jogundan biraz daha az akici ama daha guvenlidir.
 * Program calisirken "kacinci bloktayim" bilgisi Mach3'ten okunmaz; ilerleme
   cubugu yerine **tahmini sure** gosterilir.
+* Mach3'un COM arayuzu **`Steps per unit` ve `Backlash` degerlerini ne okur ne
+  yazar.** Kalibrasyon sekmesi olcumu ve hesabi yapar, degeri Mach3'un ilgili
+  penceresine **operator** girer.
 
 ---
 

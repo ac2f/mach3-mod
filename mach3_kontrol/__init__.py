@@ -14,6 +14,7 @@ Ana parcalar:
     klavye_kilidi  - Windows dusuk seviye klavye hooku + odak bekcisi
     gcode          - blok ayristirma, sira gosterimi, bloktan baslatma
     sure           - kesim suresi tahmini
+    kalibrasyon    - kumpasla adim/bosluk olcumu ve Mach3'e girilecek degerler
     denetleyici    - hepsini birlestiren beyin
     webapp         - bagimliliksiz web sunucusu + arayuz
 """
@@ -21,7 +22,8 @@ Ana parcalar:
 __version__ = "1.0.0"
 
 from . import (ayarlar, kodlar, baglanti, guvenlik, klavye_kilidi,  # noqa: F401
-               gcode, sure, denetleyici, webapp, cli)
+               gcode, sure, kalibrasyon, denetleyici, webapp, cli)
 
 __all__ = ["ayarlar", "kodlar", "baglanti", "guvenlik", "klavye_kilidi",
-           "gcode", "sure", "denetleyici", "webapp", "cli", "__version__"]
+           "gcode", "sure", "kalibrasyon", "denetleyici", "webapp", "cli",
+           "__version__"]
