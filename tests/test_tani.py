@@ -50,6 +50,66 @@ def test_tani_windows_disinda_temiz_cikar():
     assert TANI.calistir() == 1          # "Windows degil" ile duzgun biter
 
 
+# ---------------------------------------------------------------------
+# betik_nesnesi: Mach3'te asil metotlar ust nesnede degil, ondan alinan
+# ayri bir "betik" nesnesinde olabilir.
+# ---------------------------------------------------------------------
+class _Betik:
+    def GetOEMDRO(self, kod):
+        return 12.5
+
+
+class _UstNesne:
+    """GetOEMDRO'yu dogrudan sunmayan, betik nesnesine kapi acan nesne."""
+
+    def __init__(self, erisimci="GetScriptDispatch"):
+        setattr(self, erisimci, lambda: _Betik())
+
+
+class _Patlayan:
+    @property
+    def GetScriptDispatch(self):
+        raise RuntimeError("COM hatasi")
+
+
+def test_dogrudan_metot_varsa_ayni_nesne_doner():
+    b = _Betik()
+    nesne, ad = BAG.betik_nesnesi(b)
+    assert nesne is b and ad == ""
+
+
+def test_betik_nesnesi_bulunur():
+    for erisimci in ("GetScriptDispatch", "GetScript", "ScriptDispatch"):
+        ust = _UstNesne(erisimci)
+        nesne, ad = BAG.betik_nesnesi(ust)
+        assert ad == erisimci, (erisimci, ad)
+        assert nesne.GetOEMDRO(800) == 12.5
+
+
+def test_bulunamazsa_ust_nesne_korunur():
+    class Bos:
+        pass
+    bos = Bos()
+    nesne, ad = BAG.betik_nesnesi(bos)
+    assert nesne is bos and ad == ""
+
+
+def test_patlayan_erisimci_yutulur():
+    p = _Patlayan()
+    nesne, ad = BAG.betik_nesnesi(p)     # istisna disari sizmamali
+    assert nesne is p and ad == ""
+
+
+def test_com_hata_aciklamalari():
+    assert "bit" in TANI.com_hata_aciklama(
+        "(-2147221005, 'Invalid class string')") or \
+        "kayitli degil" in TANI.com_hata_aciklama(
+            "(-2147221005, 'Invalid class string')")
+    assert "yetki" in TANI.com_hata_aciklama(
+        "(-2146959355, 'Server execution failed')")
+    assert TANI.com_hata_aciklama("bilinmeyen hata") == ""
+
+
 if __name__ == "__main__":
     for ad, fn in sorted(list(globals().items())):
         if ad.startswith("test_"):

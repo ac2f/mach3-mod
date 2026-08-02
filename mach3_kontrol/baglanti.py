@@ -101,6 +101,40 @@ def mach3_calisiyor():
     return _pencere_ara("mach3") or _surec_ara("mach3.exe")
 
 
+# Ust seviye COM nesnesi (Mach4.Document) bazen yalnizca bir "kapi"dir;
+# GetOEMDRO / Code gibi betik metotlari, ondan alinan ayri bir nesnede
+# bulunur. Bilinen erisimci adlari:
+BETIK_ADLARI = ("GetScriptDispatch", "GetScript", "ScriptDispatch",
+                "GetDispatch", "Script", "Application", "Document")
+
+
+def betik_nesnesi(nesne):
+    """Betik metotlarini tasiyan nesneyi bulur.
+
+    Doner: (nesne, kullanilan_ad). Ust nesnede zaten GetOEMDRO varsa
+    dogrudan onu doner.
+    """
+    if nesne is None or hasattr(nesne, "GetOEMDRO"):
+        return nesne, ""
+    for ad in BETIK_ADLARI:
+        try:
+            uye = getattr(nesne, ad)
+        except Exception:                             # noqa: BLE001
+            continue
+        try:
+            alt = uye() if callable(uye) else uye
+        except Exception:                             # noqa: BLE001
+            continue
+        if alt is None or alt is nesne:
+            continue
+        try:
+            if hasattr(alt, "GetOEMDRO"):
+                return alt, ad
+        except Exception:                             # noqa: BLE001
+            continue
+    return nesne, ""
+
+
 def _kelimeler(satir):
     s = re.sub(r"\(.*?\)", "", satir).split(";", 1)[0]
     return {h.upper(): float(v) for h, v in _WORD_RE.findall(s)}
@@ -239,6 +273,15 @@ class COMBaglanti(TemelBaglanti):
 
         adaylar = [self.progid] + self.yedekler
         hatalar = []
+        self.betik_yolu = ""
+
+        def _betik(o):
+            """Betik metotlari ayri bir nesnedeyse ona gec."""
+            alt, ad = betik_nesnesi(o)
+            if ad:
+                self.betik_yolu = ad
+                hatalar.append(f"betik nesnesi: {ad}()")
+            return alt
 
         def _kur():
             import win32com.client
@@ -247,11 +290,17 @@ class COMBaglanti(TemelBaglanti):
             #    Table'a KAYDETMEZ; bu yuzden GetActiveObject, Mach3 acik
             #    olsa bile basarisiz olabilir. Bu bir hata degil, normaldir -
             #    asagida sureç tespitiyle telafi edilir.
-            for ad in adaylar:
-                try:
-                    return win32com.client.GetActiveObject(ad)
-                except Exception as e:                # noqa: BLE001
-                    hatalar.append(f"{ad} (ROT): {e}")
+            # Mach3 kendini ROT'a her zaman ayni anda kaydetmez; birkac kez
+            # kisa aralikla denemek pratikte fark yaratiyor.
+            for deneme in range(3):
+                for ad in adaylar:
+                    try:
+                        return _betik(win32com.client.GetActiveObject(ad))
+                    except Exception as e:            # noqa: BLE001
+                        if deneme == 0:
+                            hatalar.append(f"{ad} (ROT): {e}")
+                if deneme < 2:
+                    time.sleep(0.4)
 
             # 2) Mach3 gercekten calisiyor mu? Calisiyorsa Dispatch guvenlidir:
             #    Mach3 tek-ornek (single instance) bir sunucudur, yeni kopya
@@ -270,7 +319,7 @@ class COMBaglanti(TemelBaglanti):
             son = None
             for ad in adaylar:
                 try:
-                    return win32com.client.Dispatch(ad)
+                    return _betik(win32com.client.Dispatch(ad))
                 except Exception as e:                # noqa: BLE001
                     hatalar.append(f"{ad} (Dispatch): {e}")
                     son = e
@@ -285,6 +334,13 @@ class COMBaglanti(TemelBaglanti):
                     "sebep 32/64 bit uyusmazligi: Mach3 32-bit'tir, "
                     "kullandiginiz Python 64-bit. 32-bit Python kurup onunla "
                     "calistirin. Ayrinti icin: python main.py --tani")
+            if "server execution failed" in str(son).lower() and acik:
+                raise Mach3Hata(
+                    "Mach3 acik ama COM sunucusu baslatilamadi ('Server "
+                    "execution failed'). Genelde yetki uyusmazligidir: Mach3 "
+                    "ile bu programi AYNI yetkide calistirin (ikisi de "
+                    "yonetici, ya da ikisi de degil). Ayrinti: "
+                    "python main.py --tani")
             raise Mach3Hata(
                 "COM nesnesi olusturulamadi. ProgID yanlis olabilir "
                 "(Ayarlar > Baglanti) veya Mach3 ile bu program farkli "

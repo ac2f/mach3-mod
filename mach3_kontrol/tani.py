@@ -25,6 +25,7 @@ import platform
 import re
 import struct
 import sys
+import time
 
 from . import baglanti as BAG
 
@@ -105,6 +106,69 @@ def _progid_ara(gorunum=None):
         except OSError:
             continue
     return bulunan
+
+
+def com_hata_aciklama(e):
+    """Sik gorulen COM hatalarinin Turkce karsiligi."""
+    m = str(e)
+    if "-2147221005" in m or "Invalid class string" in m:
+        return "ProgID kayitli degil (yanlis ad ya da yanlis bit gorunumu)"
+    if "-2147221021" in m or "Operation unavailable" in m:
+        return "nesne Running Object Table'da yok (tek basina sorun degil)"
+    if "-2146959355" in m or "Server execution failed" in m:
+        return ("COM sunucusu baslatilamadi: ya yetki uyusmazligi var, ya da "
+                "Mach3 zaten acik oldugu icin ikinci ornek acilamiyor")
+    if "-2147024891" in m or "Access is denied" in m:
+        return "erisim reddedildi (yetki uyusmazligi)"
+    if "-2147221164" in m or "Class not registered" in m:
+        return "sinif kayitli degil"
+    if "-2147467262" in m or "No such interface" in m:
+        return "bu sinif Automation arayuzu sunmuyor (alakasiz bir sinif)"
+    return ""
+
+
+def _uyeler(nesne):
+    """COM nesnesinin GERCEKTEN sundugu metot/ozellik adlari (ITypeInfo)."""
+    import pythoncom
+    adlar = set()
+
+    def _topla(ti):
+        try:
+            ta = ti.GetTypeAttr()
+        except Exception:                             # noqa: BLE001
+            return
+        if ta.typekind == pythoncom.TKIND_COCLASS:
+            for i in range(ta.cImplTypes):
+                try:
+                    _topla(ti.GetRefTypeInfo(ti.GetRefTypeOfImplType(i)))
+                except Exception:                     # noqa: BLE001
+                    pass
+            return
+        for i in range(ta.cFuncs):
+            try:
+                fd = ti.GetFuncDesc(i)
+                adlar.add(ti.GetNames(fd.memid)[0])
+            except Exception:                         # noqa: BLE001
+                pass
+        for i in range(ta.cVars):
+            try:
+                vd = ti.GetVarDesc(i)
+                adlar.add(ti.GetNames(vd.memid)[0])
+            except Exception:                         # noqa: BLE001
+                pass
+        # dual arayuzlerde asil metotlar miras alinan tipte olabilir
+        for i in range(getattr(ta, "cImplTypes", 0)):
+            try:
+                _topla(ti.GetRefTypeInfo(ti.GetRefTypeOfImplType(i)))
+            except Exception:                         # noqa: BLE001
+                pass
+
+    try:
+        if nesne._oleobj_.GetTypeInfoCount() > 0:
+            _topla(nesne._oleobj_.GetTypeInfo())
+    except Exception as e:                            # noqa: BLE001
+        return [], f"tip bilgisi alinamadi: {_kisa(e)}"
+    return sorted(adlar), ""
 
 
 def _surec_32bit_mi(pid):
@@ -234,14 +298,24 @@ def calistir(ayarlar=None):
 
     nesne = None
     kazanan = ""
-    for ad in adaylar:
-        try:
-            nesne = win32com.client.GetActiveObject(ad)
-            kazanan = f"{ad} (GetActiveObject)"
-            _durum(True, f"{ad:<28} GetActiveObject basarili")
+    # Mach3 kendini ROT'a her an kaydetmiyor olabilir; birkac kez denenir.
+    for deneme in range(3):
+        for ad in adaylar:
+            try:
+                nesne = win32com.client.GetActiveObject(ad)
+                kazanan = f"{ad} (GetActiveObject)"
+                _durum(True, f"{ad:<28} GetActiveObject basarili"
+                             + (f" ({deneme + 1}. denemede)" if deneme else ""))
+                break
+            except Exception as e:                    # noqa: BLE001
+                if deneme == 0:
+                    _durum(False, f"{ad:<28} GetActiveObject: {_kisa(e)}")
+                    if com_hata_aciklama(e):
+                        print(f"         -> {com_hata_aciklama(e)}")
+        if nesne is not None:
             break
-        except Exception as e:                        # noqa: BLE001
-            _durum(False, f"{ad:<28} GetActiveObject: {_kisa(e)}")
+        if deneme < 2:
+            time.sleep(0.5)
     if nesne is None:
         print("  (GetActiveObject basarisiz olabilir - cogu COM sunucusu")
         print("   Running Object Table'a kaydolmaz; bu tek basina sorun")
@@ -254,6 +328,8 @@ def calistir(ayarlar=None):
                 break
             except Exception as e:                    # noqa: BLE001
                 _durum(False, f"{ad:<28} Dispatch: {_kisa(e)}")
+                if com_hata_aciklama(e):
+                    print(f"         -> {com_hata_aciklama(e)}")
 
     if nesne is None:
         _yaz("SONUC")
@@ -290,11 +366,46 @@ def calistir(ayarlar=None):
     metotlar = {ad: hasattr(nesne, ad) for ad in BAG.COM_METOTLAR}
     for ad, var in metotlar.items():
         _durum(var, f"metot {ad}")
+
+    # ---------------------------------------------------------------- 7
+    if not metotlar.get("GetOEMDRO"):
+        _yaz("7) Nesne ne sunuyor? (metotlar baska bir nesnede olabilir)")
+        uyeler, hata = _uyeler(nesne)
+        if hata:
+            print(f"  {hata}")
+        if uyeler:
+            print(f"  {kazanan} uyeleri ({len(uyeler)}):")
+            for i in range(0, len(uyeler), 4):
+                print("    " + "  ".join(f"{u:<24}" for u in uyeler[i:i + 4]))
+        else:
+            print("  Nesne tip bilgisi vermiyor (yalnizca gec baglama).")
+
+        print()
+        print("  Betik nesnesi araniyor (Mach3'te asil metotlar burada olur):")
+        alt, alt_ad = BAG.betik_nesnesi(nesne)
+        if alt is not None and alt is not nesne:
+            _durum(True, f"{alt_ad}() bir nesne dondurdu")
+            alt_uyeler, alt_hata = _uyeler(alt)
+            if alt_uyeler:
+                print(f"  {alt_ad}() uyeleri ({len(alt_uyeler)}):")
+                for i in range(0, len(alt_uyeler), 4):
+                    print("    " + "  ".join(f"{u:<24}"
+                                             for u in alt_uyeler[i:i + 4]))
+            elif alt_hata:
+                print(f"  {alt_hata}")
+            if hasattr(alt, "GetOEMDRO"):
+                _durum(True, "GetOEMDRO bu nesnede BULUNDU -> otomatik "
+                             "kullanilacak")
+                nesne, kazanan = alt, f"{kazanan} -> {alt_ad}()"
+                metotlar = {ad: hasattr(nesne, ad) for ad in BAG.COM_METOTLAR}
+        else:
+            print("  Bilinen adlarla betik nesnesi bulunamadi.")
+
     if not metotlar.get("GetOEMDRO"):
         _yaz("SONUC")
-        print("  Baglanilan COM nesnesi Mach3 DEGIL (GetOEMDRO metodu yok).")
-        print(f"  '{kazanan}' baska bir uygulamaya ait olabilir.")
-        print("  Ayarlar > Baglanti'daki ProgID'yi kontrol edin.")
+        print("  Baglanti kuruldu ama GetOEMDRO bulunamadi.")
+        print("  Yukaridaki 7. adimdaki UYE LISTESINI paylasin; dogru")
+        print("  metot adlari ona gore ayarlanacak.")
         return 2
 
     print()
