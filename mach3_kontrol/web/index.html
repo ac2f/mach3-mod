@@ -107,6 +107,7 @@
           <div class="bos-mesaj">Dosya secin; takim yolu ve kesim sirasi
             burada gorunur.</div>
         </div>
+        <div class="olcu-serit" id="olcuSeritMini"></div>
       </div>
 
       <div class="t-sira">
@@ -196,13 +197,28 @@
         <button class="jog guvenli" id="guvenliZBtn" title="Guvenli yukseklige cik">↑ Z guvenli</button>
       </div>
 
-      <div class="satir">
-        <label>Jog beslemesi</label>
-        <input type="number" id="jogFeed" class="alan" value="1000" min="1" step="100">
-        <span class="birim">mm/dk</span>
+      <div class="jog-hiz">
+        <div class="satir">
+          <label>Yavas jog <span class="tus-not">yon tusu</span></label>
+          <input type="number" id="jogYavas" class="alan dar" min="1" step="50">
+          <span class="birim">mm/dk</span>
+        </div>
+        <div class="satir">
+          <label>Hizli jog <span class="tus-not"><kbd>Shift</kbd>+yon</span></label>
+          <input type="number" id="jogHizli" class="alan dar" min="1" step="100">
+          <span class="birim">mm/dk</span>
+        </div>
+        <div class="satir">
+          <button class="dugme hayalet kucuk" id="jogHizKaydet">Hizlari kaydet</button>
+          <span class="jog-rozet gizli" id="jogRozet">JOG</span>
+        </div>
       </div>
-      <p class="ipucu">Basili tut modunda parmagi/fareyi cektiginizde veya
-        baglanti koptugunda hareket <b>aninda durur</b> (olu adam butonu).</p>
+      <p class="ipucu">
+        <b>Yon tuslari</b> yavas, <b><kbd>Shift</kbd>+yon</b> hizli jog yapar;
+        basili tutarken Shift'e basip birakmak hizi <b>aninda</b> degistirir.
+        Tusu/parmagi biraktiginiz an Mach3'e Feed Hold + Stop gonderilir,
+        eksen kuyrukta kalan adimi tamamlamadan durur.
+      </p>
     </div>
 
     <!-- HASSAS HAREKET -->
@@ -364,6 +380,8 @@
         <div class="onizleme" id="onizleme">
           <div class="bos-mesaj">Dosya secin, kesim sirasi burada gorunur.</div>
         </div>
+        <!-- kesim alani olculeri (is sifirina gore) -->
+        <div class="olcu-serit" id="olcuSerit"></div>
       </div>
 
       <div class="kart">
@@ -395,9 +413,17 @@
     <div class="katman-kutu">
       <div class="kart-bas">
         <h2>Dosya sec</h2>
-        <button class="mini" id="gezginKapat">Kapat</button>
+        <div class="kart-bas-sag">
+          <div class="secim" id="gezginSira" title="Siralama">
+            <button class="aktif" data-s="tarih">Yeni ustte</button>
+            <button data-s="ad">Ada gore</button>
+          </div>
+          <button class="mini" id="gezginKapat">Kapat</button>
+        </div>
       </div>
       <div class="yol-cubugu" id="gezginYol"></div>
+      <input type="text" id="gezginSuz" class="alan gezgin-suz"
+             placeholder="Suz: dosya ya da klasor adi yazin…" autocomplete="off">
       <div class="gezgin" id="gezgin"></div>
     </div>
   </div>
@@ -652,6 +678,24 @@
         <input type="number" id="gJogSure" class="alan" step="1"><span class="birim">sn</span></div>
       <div class="satir"><label>Kalp atisi araligi</label>
         <input type="number" id="gKalp" class="alan" step="50"><span class="birim">ms</span></div>
+
+      <div class="ayirac"></div>
+      <div class="kart-bas"><h3>Surekli jog hissiyati</h3></div>
+      <p class="ipucu">Mach3'un COM arayuzunde gercek bir surekli jog cagrisi
+        yoktur; hareket kisa adimlarin zincirlenmesiyle uretilir. <b>Ortusme</b>
+        her adimi bir sonraki gelene kadar surdurur — kucultursaniz eksen
+        adimlar arasinda takilir, buyutursaniz birakinca sonlanma mesafesi
+        uzar.</p>
+      <div class="satir"><label>Yavas jog (yon tusu)</label>
+        <input type="number" id="gJogYavas" class="alan" step="50"><span class="birim">mm/dk</span></div>
+      <div class="satir"><label>Hizli jog (Shift+yon)</label>
+        <input type="number" id="gJogHizli" class="alan" step="100"><span class="birim">mm/dk</span></div>
+      <div class="satir"><label>Adim araligi (tik)</label>
+        <input type="number" id="gJogTik" class="alan" step="10" min="20"><span class="birim">ms</span></div>
+      <div class="satir"><label>Adim ortusmesi</label>
+        <input type="number" id="gJogOrtusme" class="alan" step="0.05" min="1"><span class="birim">×</span></div>
+      <label class="onay"><input type="checkbox" id="gJogDurdur">
+        Birakinca Feed Hold + Stop ile kuyrugu bosalt (onerilir)</label>
       <label class="onay"><input type="checkbox" id="gGuvenliZZorunlu">
         XY hareketinden once Z'yi guvenli yuksekli§e al</label>
       <div class="satir"><button class="dugme genis" id="guvenlikKaydet">Kaydet</button></div>

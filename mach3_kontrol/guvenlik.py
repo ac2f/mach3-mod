@@ -461,6 +461,8 @@ class Guvenlik:
             "yumusak_limit_zorunlu": bool(g.get("yumusak_limit_zorunlu")),
             "max_jog_adim": g.get("max_jog_adim"),
             "max_jog_feed": g.get("max_jog_feed"),
+            "jog_yavas_feed": g.get("jog_yavas_feed"),
+            "jog_hizli_feed": g.get("jog_hizli_feed"),
             "guvenli_z": g.get("guvenli_z"),
             "max_dalis_derinlik": g.get("max_dalis_derinlik"),
             "makine_z_taban": g.get("makine_z_taban"),

@@ -114,6 +114,83 @@ def test_gozat():
     assert any(f["ad"].endswith(".tap") for f in d["dosyalar"])
 
 
+def test_gozat_son_klasoru_hatirlar():
+    """Kullanici dosya ACMADAN cikip geri gelse de ayni yerden devam eder."""
+    kur()
+    alt = os.path.join(_DIZIN, "hatirla")
+    os.makedirs(alt, exist_ok=True)
+    cagir("/api/gozat", {"klasor": alt})
+    d = cagir("/api/gozat", {})              # klasor verilmedi
+    assert d["klasor"] == alt, d["klasor"]
+
+
+def test_gozat_en_yeni_ustte():
+    """Varsayilan siralama: en son degisiklik yapilan en ustte."""
+    kur()
+    kok = os.path.join(_DIZIN, "sira")
+    os.makedirs(kok, exist_ok=True)
+    simdi = time.time()
+    for ad, yas_sn in (("eski.tap", 9000), ("orta.tap", 3600),
+                       ("yeni.tap", 10)):
+        yol = os.path.join(kok, ad)
+        with open(yol, "w", encoding="utf-8") as f:
+            f.write("G21\n")
+        os.utime(yol, (simdi - yas_sn, simdi - yas_sn))
+    for ad, yas_sn in (("eski_klasor", 9000), ("yeni_klasor", 5)):
+        yol = os.path.join(kok, ad)
+        os.makedirs(yol, exist_ok=True)
+        os.utime(yol, (simdi - yas_sn, simdi - yas_sn))
+
+    d = cagir("/api/gozat", {"klasor": kok, "siralama": "tarih"})
+    assert [f["ad"] for f in d["dosyalar"]] == ["yeni.tap", "orta.tap",
+                                                "eski.tap"]
+    assert [k["ad"] for k in d["klasorler"]] == ["yeni_klasor", "eski_klasor"]
+    assert all("zaman" in k for k in d["klasorler"])   # arayuz "3 dk once" yazar
+
+    d = cagir("/api/gozat", {"klasor": kok, "siralama": "ad"})
+    assert [f["ad"] for f in d["dosyalar"]] == ["eski.tap", "orta.tap",
+                                                "yeni.tap"]
+    # Secim hatirlanir
+    assert cagir("/api/gozat", {"klasor": kok})["siralama"] == "ad"
+    cagir("/api/gozat", {"klasor": kok, "siralama": "tarih"})
+
+
+def test_baglanti_acik_kalir():
+    """HTTP/1.1 keep-alive: her kucuk POST icin yeni TCP baglantisi acmak
+    jogda gozle gorulur gecikme yaratiyordu."""
+    kur()
+    import http.client
+    c = http.client.HTTPConnection("127.0.0.1", _PORT, timeout=8)
+    for _ in range(3):
+        c.request("POST", "/api/durum", body=b"{}",
+                  headers={"Content-Type": "application/json"})
+        y = c.getresponse()
+        y.read()
+        assert y.status == 200
+        assert y.version == 11
+        assert (y.getheader("Connection") or "").lower() != "close"
+    c.close()
+
+
+def test_program_olculeri():
+    """Onizleme bilgi seridi: kesim alani, en sag/en ust, X0Y0'a uzaklik."""
+    yol = os.path.join(_DIZIN or tempfile.mkdtemp(), "olcu_deneme.tap")
+    kur()
+    with open(yol, "w", encoding="utf-8") as f:
+        f.write("\n".join(ORNEK))
+    p = cagir("/api/program/yukle", {"yol": yol})
+    o = p["olcu"]
+    assert o["kesim"]["x"] == [10.0, 150.0]
+    assert o["kesim"]["genislik"] == 140.0
+    assert o["kesim"]["yukseklik"] == 90.0
+    assert o["sifira_gore"]["sag"] == 150.0
+    assert o["sifira_gore"]["ust"] == 100.0
+    assert o["sifira_gore"]["sol"] == 10.0
+    assert o["z"]["min"] == -5.0
+    # Bosta (G0) gidisler dahil zarf, kesim alanindan buyuk olmali
+    assert o["tum"]["genislik"] >= o["kesim"]["genislik"]
+
+
 def test_ayar_kaydetme():
     d = cagir("/api/ayarlar", {"yama": {"guvenlik": {"guvenli_z": 33.0}}})
     assert d["ayarlar"]["guvenlik"]["guvenli_z"] == 33.0

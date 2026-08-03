@@ -179,13 +179,22 @@ def api_durdur(veri, ip):
 def api_jog_adim(veri, ip):
     _yetki(veri, ip)
     return DENETLEYICI.jog_adim(veri["eksen"], float(veri["mesafe"]),
-                                veri.get("feed"), _istemci(veri))
+                                veri.get("feed"), veri.get("hizli"),
+                                _istemci(veri))
 
 
 def api_jog_basla(veri, ip):
     _yetki(veri, ip)
     return DENETLEYICI.jog_basla(veri["eksen"], int(veri.get("yon", 1)),
-                                 veri.get("feed"), _istemci(veri))
+                                 veri.get("feed"), veri.get("hizli"),
+                                 _istemci(veri))
+
+
+def api_jog_hiz(veri, ip):
+    """Tus basiliyken Shift'e basmak: jogu kesmeden beslemeyi degistirir."""
+    _yetki(veri, ip)
+    return DENETLEYICI.jog_hiz((veri or {}).get("feed"),
+                               (veri or {}).get("hizli"), _istemci(veri))
 
 
 def api_jog_kalp(veri, ip):
@@ -386,34 +395,69 @@ def api_sure(veri, ip):
 
 
 # -- dosya gezgini -------------------------------------------------------
+# HIZ NOTU: eskiden her girdi icin ayri ayri `isdir` + `stat` cagriliyordu;
+# ag surucusu (\\sunucu\isler) uzerinde bu, klasor basina yuzlerce gidis-
+# donus demektir ve gezgin gozle gorulur sekilde takilir. `os.scandir`
+# girdinin turunu ve stat bilgisini isletim sisteminden TEK gecise alir.
+def _gozat_oku(klasor):
+    klasorler, dosyalar = [], []
+    with os.scandir(klasor) as girdiler:
+        for g in girdiler:
+            if g.name.startswith("."):
+                continue
+            try:
+                if g.is_dir(follow_symlinks=False):
+                    st = g.stat(follow_symlinks=False)
+                    klasorler.append({"ad": g.name, "yol": g.path,
+                                      "zaman": st.st_mtime})
+                elif os.path.splitext(g.name)[1].lower() in GCODE_UZANTI:
+                    st = g.stat()
+                    dosyalar.append({"ad": g.name, "yol": g.path,
+                                     "boyut": st.st_size,
+                                     "zaman": st.st_mtime})
+            except OSError:
+                continue                   # erisilemeyen girdiyi atla
+    return klasorler, dosyalar
+
+
 def api_gozat(veri, ip):
     _yetki(veri, ip)
-    klasor = (veri or {}).get("klasor") or AYARLAR["gcode"].get("son_klasor") \
-        or os.path.expanduser("~")
+    v = veri or {}
+    ay = AYARLAR["gcode"]
+    # Klasor hatirlama: kullanici dosya ACMADAN gezip cikabilir; bir dahaki
+    # acilista yine ayni yerden devam etmek ister.
+    klasor = (v.get("klasor") or ay.get("gozat_klasor")
+              or ay.get("son_klasor") or os.path.expanduser("~"))
     klasor = os.path.abspath(os.path.expanduser(klasor))
     if not os.path.isdir(klasor):
         klasor = os.path.expanduser("~")
-    klasorler, dosyalar = [], []
     try:
-        for ad in sorted(os.listdir(klasor), key=str.lower):
-            if ad.startswith("."):
-                continue
-            tam = os.path.join(klasor, ad)
-            try:
-                if os.path.isdir(tam):
-                    klasorler.append({"ad": ad, "yol": tam})
-                elif os.path.splitext(ad)[1].lower() in GCODE_UZANTI:
-                    st = os.stat(tam)
-                    dosyalar.append({"ad": ad, "yol": tam, "boyut": st.st_size,
-                                     "zaman": st.st_mtime})
-            except OSError:
-                continue
+        klasorler, dosyalar = _gozat_oku(klasor)
     except PermissionError:
         return {"hata": f"Erisim yok: {klasor}"}
+    except OSError as e:
+        return {"hata": f"Klasor okunamadi: {e}"}
+
+    siralama = (v.get("siralama") or ay.get("gozat_siralama") or "tarih")
+    if siralama == "ad":
+        anahtar, ters = (lambda o: o["ad"].lower()), False
+    else:
+        # En son degisiklik yapilan en ustte: yeni is klasoru hep elinizin
+        # altinda olur.
+        anahtar, ters = (lambda o: o.get("zaman") or 0.0), True
+    klasorler.sort(key=anahtar, reverse=ters)
+    dosyalar.sort(key=anahtar, reverse=ters)
+
+    yama = {"gozat_klasor": klasor}
+    if v.get("siralama"):
+        yama["gozat_siralama"] = siralama
+    AYARLAR.guncelle({"gcode": yama})
+
     ust = os.path.dirname(klasor)
     return {"klasor": klasor, "ust": ust if ust != klasor else None,
             "klasorler": klasorler, "dosyalar": dosyalar,
-            "ev": os.path.expanduser("~")}
+            "siralama": siralama, "ev": os.path.expanduser("~"),
+            "son_klasor": ay.get("son_klasor") or ""}
 
 
 # -- ayarlar / kodlar / gunluk ------------------------------------------
@@ -451,6 +495,7 @@ API = {
     "/api/durdur": api_durdur,
     "/api/jog/adim": api_jog_adim,
     "/api/jog/basla": api_jog_basla,
+    "/api/jog/hiz": api_jog_hiz,
     "/api/jog/kalp": api_jog_kalp,
     "/api/jog/bitir": api_jog_bitir,
     "/api/git": api_git,
@@ -489,6 +534,17 @@ SURUM = "1.0.0"
 class Isleyici(BaseHTTPRequestHandler):
     server_version = "Mach3Kontrol/" + SURUM
 
+    # HIZ: arayuz saniyede onlarca kucuk POST gonderir (jog kalp atisi, durum,
+    # gezgin). HTTP/1.0'da her istek YENI bir TCP baglantisi acar; el sikisma
+    # + kapanma gecikmesi jogda gozle gorulur bir "agirlik" yaratiyordu.
+    # HTTP/1.1 ile baglanti acik kalir (keep-alive). Bunun sarti her yanitin
+    # dogru Content-Length tasimasidir - `_gonder` bunu her zaman yapar,
+    # olay akisi ise acikca "Connection: close" der.
+    protocol_version = "HTTP/1.1"
+    # Nagle, kucuk paketleri birlestirmek icin 40 ms'ye kadar bekletir; jog
+    # komutlarinda bu dogrudan tepki gecikmesidir.
+    disable_nagle_algorithm = True
+
     def log_message(self, *a):
         pass
 
@@ -513,6 +569,8 @@ class Isleyici(BaseHTTPRequestHandler):
         yol = self.path.split("?", 1)[0]
         if yol == "/favicon.ico":
             self.send_response(204)
+            # HTTP/1.1 keep-alive: govdesiz yanitta da uzunluk belirtilir
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
         if yol == "/olay":

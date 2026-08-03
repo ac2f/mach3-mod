@@ -57,6 +57,8 @@ class Denetleyici:
         # jog durumu
         self._jog_dur = threading.Event()
         self._jog_is = None
+        # Suren jogun beslemesi; Shift'e basip birakmak bunu canli degistirir
+        self._jog_feed = 600.0
         self.jog_bilgi = {"aktif": False, "eksen": None, "yon": 0}
         self.bekci = GUV.KalpAtisiBekcisi(
             self._bekci_durdur,
@@ -607,13 +609,13 @@ class Denetleyici:
         for s in satirlar:
             b.kod(s)
 
-    def jog_adim(self, eksen, mesafe, feed=None, istemci=None):
+    def jog_adim(self, eksen, mesafe, feed=None, hizli=None, istemci=None):
         """Bagil (artimli) tek adim: 'X ekseninde sola 25 mm git'."""
         self.kilit.dogrula(istemci)
         eksen = eksen.upper()
         self._referans_gerekli([eksen])
-        feed = float(feed or min(self.ayarlar["guvenlik"]["max_jog_feed"],
-                                 1500.0))
+        feed = float(feed) if feed else self.jog_feed(bool(hizli))
+        feed = min(feed, float(self.ayarlar["guvenlik"]["max_jog_feed"]))
         self.guvenlik.jog_dogrula(eksen, float(mesafe), feed,
                                   self._tezgah, self._konum)
         self._mdi("G91", f"G1 {eksen}{mesafe:.4f} F{feed:.1f}", "G90")
@@ -662,57 +664,188 @@ class Denetleyici:
         return {"z": gz}
 
     # -- surekli jog ------------------------------------------------------
-    def jog_basla(self, eksen, yon, feed=None, istemci=None):
+    # Mach3'un COM arayuzunde gercek bir "surekli jog" cagrisi yoktur; hareket
+    # kisa artimli adimlarin ZINCIRLENMESIYLE uretilir. Hissiyati Mach3'e
+    # yaklastiran uc ayrinti:
+    #
+    #   1. Adim, bir sonraki adim gelene kadar BITMEMELI. Eskiden adim 5 mm
+    #      ile siniriydi: 4000 mm/dk'da 5 mm 0.075 sn surer ama zincir 0.15
+    #      sn'de bir gelirdi -> eksen her adim arasinda duruyordu ("tik tik").
+    #      Artik adim = feed/60 * tik * ortusme ile hesaplanir.
+    #   2. Her adim TEK MDI satiri olmali. Eskiden "G91" + "G1 ..." + "G90"
+    #      diye UC COM cagrisi gidiyordu; her cagri bir tur gecikme demektir.
+    #      Artik G91 basta bir kez, G90 sonda bir kez gonderilir.
+    #   3. Birakinca kuyrukta kalan adimlar Mach3'un Feed Hold + Stop'uyla
+    #      bosaltilir; yoksa parmagi cektikten sonra eksen bir sure daha
+    #      "kayar". Feed Hold, Mach3'un kendi yavaslama rampasini kullanir -
+    #      sert kesme olmadigi icin adim kaybi riski dogmaz.
+    def _jog_ayari(self):
+        g = self.ayarlar["guvenlik"]
+        return (max(float(g.get("jog_tik_ms", 80)), 20.0) / 1000.0,
+                max(float(g.get("jog_ortusme", 1.35)), 1.0),
+                bool(g.get("jog_birakinca_durdur", True)))
+
+    def jog_feed(self, hizli=False):
+        """Yon tusu (yavas) / Shift+yon (hizli) beslemesi, sinirla kirpilmis."""
+        g = self.ayarlar["guvenlik"]
+        f = float(g.get("jog_hizli_feed", 4000.0) if hizli
+                  else g.get("jog_yavas_feed", 600.0))
+        return max(min(f, float(g.get("max_jog_feed", 6000.0))), 1.0)
+
+    def jog_basla(self, eksen, yon, feed=None, hizli=None, istemci=None):
         """Basili tut - birak jogu.
 
-        Mach3'un COM arayuzunde guvenilir bir 'surekli jog' cagrisi yoktur;
-        bu yuzden KISA artimli adimlar zincirlenir. Her adim ayri ayri
-        guvenlik denetiminden gecer ve istemcinin kalp atisi kesilirse zincir
-        aninda durur (olu adam butonu).
+        `hizli` verilirse besleme ayarlardan alinir (Shift kipi); `feed`
+        verilirse dogrudan o kullanilir. Her adim ayri ayri guvenlik
+        denetiminden gecer ve istemcinin kalp atisi kesilirse zincir aninda
+        durur (olu adam butonu).
         """
         self.kilit.dogrula(istemci)
+        if self.calisiyor:
+            # Program calisirken jog hem anlamsiz hem tehlikelidir; ayrica
+            # birakinca gonderilen Feed Hold/Stop programi da keserdi.
+            raise GUV.GuvenlikHatasi(
+                "Program calisirken jog yapilamaz. Once programi durdurun.")
         eksen, yon = eksen.upper(), (1 if yon >= 0 else -1)
         self._referans_gerekli([eksen])
-        feed = float(feed or 1000.0)
-        max_feed = float(self.ayarlar["guvenlik"]["max_jog_feed"])
-        feed = min(feed, max_feed)
+        if feed is None:
+            feed = self.jog_feed(bool(hizli))
+        feed = min(float(feed), float(self.ayarlar["guvenlik"]["max_jog_feed"]))
         self.jog_bitir()
         self._jog_dur.clear()
+        self._jog_feed = feed
         self.bekci.baslat()
         self.jog_bilgi = {"aktif": True, "eksen": eksen, "yon": yon,
-                          "feed": feed}
+                          "feed": feed, "hizli": bool(hizli)}
         self._jog_is = threading.Thread(
-            target=self._jog_dongu, args=(eksen, yon, feed), daemon=True,
+            target=self._jog_dongu, args=(eksen, yon), daemon=True,
             name="jog")
         self._jog_is.start()
         self.gunluk.ekle("hareket", f"Surekli jog basladi {eksen}{yon:+d} "
-                                    f"@F{feed:.0f}")
-        return {"eksen": eksen, "yon": yon, "feed": feed}
+                                    f"@F{feed:.0f}"
+                                    + (" (hizli)" if hizli else ""))
+        return {"eksen": eksen, "yon": yon, "feed": feed,
+                "hizli": bool(hizli)}
 
-    def _jog_dongu(self, eksen, yon, feed):
-        periyot = 0.15
-        adim = max(min(feed / 60.0 * periyot * 1.4, 5.0), 0.05)
-        while not self._jog_dur.is_set() and self.bekci.aktif:
-            try:
-                self.guvenlik.jog_dogrula(eksen, yon * adim, feed,
-                                          self._tezgah, self._konum)
-                self._mdi("G91", f"G1 {eksen}{yon * adim:.4f} F{feed:.1f}",
-                          "G90")
-            except GUV.GuvenlikHatasi as e:
-                self.gunluk.ekle("guvenlik",
-                                 f"Jog durduruldu: {'; '.join(e.sebepler)}")
-                break
-            except Exception as e:                    # noqa: BLE001
-                self.gunluk.ekle("hata", f"Jog hatasi: {e}")
-                break
-            time.sleep(periyot)
-        self.jog_bilgi = {"aktif": False, "eksen": None, "yon": 0}
-        self.bekci.bitir()
+    def jog_hiz(self, feed=None, hizli=None, istemci=None):
+        """Suren jogun beslemesini degistirir (tus basiliyken Shift'e basmak).
+
+        Jogu kesip yeniden baslatmak, zinciri bosaltip eksenin bir an
+        durmasina yol acardi; bunun yerine calisan dongu bir sonraki adimda
+        yeni beslemeyi kullanir.
+        """
+        self.kilit.dogrula(istemci)
+        if feed is None:
+            feed = self.jog_feed(bool(hizli))
+        feed = min(float(feed), float(self.ayarlar["guvenlik"]["max_jog_feed"]))
+        self._jog_feed = max(feed, 1.0)
+        if self.jog_bilgi.get("aktif"):
+            self.jog_bilgi["feed"] = self._jog_feed
+            self.jog_bilgi["hizli"] = bool(hizli)
+        return {"feed": self._jog_feed, "hizli": bool(hizli)}
+
+    def _jog_dongu(self, eksen, yon):
+        periyot, ortusme, _ = self._jog_ayari()
+        max_adim = float(self.ayarlar["guvenlik"].get("max_jog_adim", 100.0))
+        b = self.baglanti
+        g91 = False
+        # GONDERILMIS AMA HENUZ OKUNMAMIS MESAFE
+        # DRO yoklamasi 10 Hz'dir, yani konum 100 ms'ye kadar geriden gelir.
+        # Adimlar artik uzun oldugu icin (hizli jogda ~7 mm) o sure iginde
+        # gonderilen iki-uc adim, limit denetimi "hala iceridesin" derken
+        # sinirin disina tasabilir. Bu yuzden denetim, okunan konuma degil
+        # GONDERDIGIMIZ (taahhut edilen) konuma gore yapilir; yoklama daha
+        # ileriyi gosterirse ondan devam edilir.
+        taahhut = None
         try:
-            if self.bagli:
-                self.baglanti.jog_durdur()
+            while not self._jog_dur.is_set() and self.bekci.aktif:
+                feed = self._jog_feed
+                # Adim, bir sonraki adim gelene kadar bitmeyecek kadar uzun
+                # olmali; yoksa eksen adimlar arasinda duraklar.
+                adim = min(max(feed / 60.0 * periyot * ortusme, 0.02),
+                           max_adim)
+                ileri = (max if yon > 0 else min)
+                okunan_t = self._tezgah.get(eksen)
+                okunan_i = self._konum.get(eksen)
+                if okunan_t is None:
+                    taahhut = None
+                elif taahhut is None:
+                    taahhut = (okunan_t, okunan_i)
+                else:
+                    taahhut = (ileri(taahhut[0], okunan_t),
+                               taahhut[1] if okunan_i is None
+                               else ileri(taahhut[1], okunan_i))
+                d_tezgah, d_konum = self._tezgah, self._konum
+                if taahhut is not None:
+                    d_tezgah = dict(d_tezgah)
+                    d_tezgah[eksen] = taahhut[0]
+                    if taahhut[1] is not None:
+                        d_konum = dict(d_konum)
+                        d_konum[eksen] = taahhut[1]
+                try:
+                    self.guvenlik.jog_dogrula(eksen, yon * adim, feed,
+                                              d_tezgah, d_konum)
+                    if not g91:
+                        self._mdi("G91")
+                        g91 = True
+                    self._mdi(f"G1 {eksen}{yon * adim:.4f} F{feed:.1f}")
+                    if taahhut is not None:
+                        taahhut = (taahhut[0] + yon * adim,
+                                   None if taahhut[1] is None
+                                   else taahhut[1] + yon * adim)
+                except GUV.GuvenlikHatasi as e:
+                    self.gunluk.ekle(
+                        "guvenlik", f"Jog durduruldu: {'; '.join(e.sebepler)}")
+                    break
+                except Exception as e:                # noqa: BLE001
+                    self.gunluk.ekle("hata", f"Jog hatasi: {e}")
+                    break
+                time.sleep(periyot)
+        finally:
+            self.jog_bilgi = {"aktif": False, "eksen": None, "yon": 0}
+            self.bekci.bitir()
+            self._jog_sonlandir(b, g91)
+
+    def _jog_sonlandir(self, b, g91):
+        """Kuyrugu bosalt ve modal durumu (G90) MUTLAKA geri getir.
+
+        G91 acik unutulursa sonraki her mutlak komut artimli calisir; bu,
+        makineyi bambaska bir yere goturur. Bu yuzden hata olsa da G90
+        gonderilir.
+        """
+        _, _, birakinca_durdur = self._jog_ayari()
+        if not (b and getattr(b, "bagli", False)):
+            return
+        try:
+            b.jog_durdur()
         except Exception:                             # noqa: BLE001
             pass
+        if birakinca_durdur:
+            try:
+                # Feed Hold: Mach3'un kendi yavaslama rampasi (adim kaybi yok)
+                b.dugme(self.kodlar.buton["feed_hold"])
+                bitis = time.time() + 0.6
+                while time.time() < bitis:
+                    try:
+                        if not b.hareket_ediyor():
+                            break
+                    except Exception:                 # noqa: BLE001
+                        break
+                    time.sleep(0.03)
+                # Stop: kuyrukta kalan adimlari at, hold durumundan cik
+                b.dugme(self.kodlar.buton["stop"])
+            except Exception as e:                    # noqa: BLE001
+                self.gunluk.ekle("hata", f"Jog durdurma: {e}")
+        if g91:
+            for _ in range(3):
+                try:
+                    b.kod("G90")
+                    return
+                except Exception:                     # noqa: BLE001
+                    time.sleep(0.1)
+            self.gunluk.ekle(
+                "hata", "DIKKAT: jog sonrasi G90 gonderilemedi; Mach3 hala "
+                        "ARTIMLI (G91) kipte olabilir. MDI'dan G90 yazin.")
 
     def jog_kalp(self, istemci=None):
         """Istemci 'hala basiliyim' der. Kesilirse hareket durur."""
@@ -723,7 +856,7 @@ class Denetleyici:
         self._jog_dur.set()
         self.bekci.bitir()
         if self._jog_is and self._jog_is.is_alive():
-            self._jog_is.join(timeout=1.0)
+            self._jog_is.join(timeout=1.5)
         self.jog_bilgi = {"aktif": False, "eksen": None, "yon": 0}
         return True
 
@@ -1403,6 +1536,9 @@ class Denetleyici:
             "sure": self.program_sure,
             "header": len(self.program.header),
             "footer": len(self.program.footer),
+            # Onizleme bilgi seridi: kesim alani, tum hareket zarfi ve
+            # is sifirina (X0 Y0) gore konum
+            "olcu": self.program.olculer(),
         }
 
     def blok_sec(self, index):
