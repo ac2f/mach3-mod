@@ -431,6 +431,59 @@ class Program:
             })
         return out
 
+    def olculer(self):
+        """Programin is koordinatindaki olculeri (onizleme bilgi seridi).
+
+        Iki ayri kapsam verilir; ikisini karistirmak yanlis karar dogurur:
+
+        * `kesim` - yalnizca KESIM bloklarinin kapladigi alan. "Parca ne
+          kadar yer kaplayacak, malzemeyi nereye baglayayim" sorusunun
+          yanitidir. Yay uc noktalari degil gercek yay gecisleri sayilir.
+        * `tum`   - bosta (G0) gidislerle birlikte TUM hareket zarfi.
+          Yumusak limit denetimi bunu kullanir; genelde kesim alanindan
+          buyuktur (basa/sona donus hareketleri).
+
+        Ayrica is sifirina (X0 Y0) gore konum bilgisi verilir: sol/alt
+        bosluk, en sag ve en ust nokta.
+        """
+        satirlar = list(self.header)
+        for b in self.bloklar:
+            satirlar += b
+        satirlar += self.footer
+        tum = kapsam(satirlar, (0.0, 0.0, 0.0))
+
+        kx0 = ky0 = kx1 = ky1 = None
+        for blok in self.bloklar:
+            bx0, by0, bx1, by1 = blok_bbox(blok)
+            kx0 = bx0 if kx0 is None else min(kx0, bx0)
+            ky0 = by0 if ky0 is None else min(ky0, by0)
+            kx1 = bx1 if kx1 is None else max(kx1, bx1)
+            ky1 = by1 if ky1 is None else max(ky1, by1)
+
+        def _kutu(x0, y0, x1, y1):
+            if x0 is None or y0 is None:
+                return None
+            return {"x": [round(x0, 3), round(x1, 3)],
+                    "y": [round(y0, 3), round(y1, 3)],
+                    "genislik": round(x1 - x0, 3),
+                    "yukseklik": round(y1 - y0, 3)}
+
+        z = tum["Z"]
+        return {
+            "kesim": _kutu(kx0, ky0, kx1, ky1),
+            "tum": _kutu(tum["X"][0], tum["Y"][0], tum["X"][1], tum["Y"][1]),
+            "z": {"min": None if z[0] is None else round(z[0], 3),
+                  "max": None if z[1] is None else round(z[1], 3)},
+            # Is sifirina gore: parcanin sol/alt kosesi nerede baslar,
+            # en sag ve en ust noktasi kaca kadar gider.
+            "sifira_gore": None if kx0 is None else {
+                "sol": round(kx0, 3), "alt": round(ky0, 3),
+                "sag": round(kx1, 3), "ust": round(ky1, 3),
+                "kosegen": round(math.hypot(kx1 - kx0, ky1 - ky0), 3),
+            },
+            "birim": self.birim,
+        }
+
     def satir_araligi(self, blok_index):
         """Blogun dosyadaki satir araligi (1'den baslayan, kapsayici)."""
         onceki = len(self.header) + sum(

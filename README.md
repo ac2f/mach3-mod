@@ -331,6 +331,130 @@ yukseklik** geri gelir. Tezgah sekmesindeki profil kutusundan *kaydet* /
 
 ---
 
+## Kalibrasyon: dijital kumpasla hassas ayar
+
+*Kalibrasyon* sekmesi, **“100 mm dedim, gercekten kac mm gitti?”** sorusunu
+olcup makinenizi mikron duzeyinde ayarlamanizi saglar.
+
+> **Onemli:** Mach3'un COM/OLE arayuzunde `Steps per unit` (motor adim
+> sayisi) ve `Backlash` degerlerini **okuyan ya da yazan bir cagri yoktur** —
+> bu degerler Mach3'un profil dosyasindadir ve yalnizca Mach3'un kendi
+> pencerelerinden degistirilebilir. Bu yuzden is bolusumu soyledir:
+>
+> * **program**: hareketi yapar, olcumu toplar, ortalar, yeni degeri hesaplar
+> * **siz**: sag paneldeki sayiyi Mach3'un ilgili kutusuna yazarsiniz
+>
+> Sag panel **hangi menu → hangi pencere → hangi kutu → hangi sayi**
+> bilgisini eksiksiz verir ve “Kopyala” ile panoya alinir.
+
+### Olcum nasil yapilir
+
+1. **Kumpasi baglayin.** Sabit cenesi tezgaha (hareket *etmeyen* parcaya),
+   hareketli cenesi kizak/spindle tarafina (hareket *eden* parcaya) gelecek
+   sekilde, olcum ekseni dogrultusunda sabitleyin.
+2. **Mach3'teki guncel “Steps per” degerini girin**
+   (*Config → Motor Tuning and Setup → &lt;eksen&gt; Axis*). Bos birakirsaniz
+   program yalnizca **carpan** verir; mevcut degerinizi onunla carparsiniz.
+3. **Baslat** → **“Boslugu al”**: eksen once ters yone, sonra olcum yonune
+   `on_yaklasma` kadar gider. Boylece vida/kayis boslugu olcum yonunde
+   toplanir ve olcege karismaz.
+4. **Kumpasi sifirlayin** (ya da A okumasini yazin).
+5. **“Olcum hareketini yap”** → eksen tam `olcum_mesafe` kadar gider.
+6. **B okumasini girin.** Gercek mesafe = |B − A|.
+7. Tekrar sayisi kadar yineleyin; program **ortalar** ve olcumler arasindaki
+   **yayilimi** kumpas cozunurluguyle karsilastirip guvenilir olup olmadigini
+   soyler.
+
+### Hesap
+
+```
+yeni_adim_basi = eski_adim_basi x (komut / olculen)
+```
+
+Mach3 `adim_basi x komut` kadar darbe gonderir; olculen mesafe komuttan
+**buyukse** adim sayisi fazladir ve **kucultulmelidir**. Ornek: 1600 adim/mm
+ile 100 mm komuta 100.5 mm gidiyorsa yeni deger `1600 x 100/100.5 = 1592.04`.
+
+### Uc olcum turu
+
+| Tur | Ne olcer | Mach3'te nereye yazilir |
+|---|---|---|
+| **Olcek** | Eksenin gercek adim/mm degeri | `Config → Motor Tuning and Setup → <eksen> Axis → Steps per` (sonra **SAVE AXIS SETTINGS**) |
+| **Bosluk** | Yon degistirirken kaybolan hareket (backlash) | `Config → Backlash → <eksen>` + *Backlash Enabled* |
+| **Dogrulama** | Yeni deger gercekten isledi mi | — (yalnizca rapor; tolerans disindaysa uyarir) |
+
+Bosluk olcumunde ayni noktaya bir kez olcum yonunden, bir kez **ters
+yonden** gelinir; iki okuma arasindaki fark o eksenin kayip hareketidir.
+
+### Guvenlik
+
+* Kalibrasyon hareketleri **normal jog gibi** guvenlik katmanindan gecer:
+  tezgah referansi zorunlu, yumusak limit, tezgah tabani, adim ve besleme
+  siniri denetlenir. Bir hareket reddedilirse oturum basa doner ve **hangi
+  limitin asildigi** yazilir.
+* Olcum mesafesi + on yaklasma toplami `max_jog_adim` degerini asiyorsa,
+  **olcumun ortasinda degil baslarken** reddedilir.
+* Kumpas okumasi komuttan %50'den fazla sapiyorsa kabul edilmez — bu bir
+  kalibrasyon sapmasi degil, kaymis bir kumpas ya da yanlis girilmis bir
+  sayidir.
+* **“Mach3'e girdim”** dedikten sonra o eksenin **tezgah referansi dusurulur**:
+  adim sayisi degisince makine koordinatinin olcegi de degisir, eski referansla
+  olculen limitler artik yanlis yeri gosterir. Yeniden referans alin ve tezgah
+  tabanini dogrulayin.
+
+Kaydedilen degerler (`adim_basi`, `bosluk`) ve uygulanan her kalibrasyonun
+gecmisi ayar dosyasinda tutulur. Bu kayit **makineyi degistirmez** — makineyi
+Mach3'e yazdiginiz deger kalibre eder; kayit yalnizca bir sonraki hesabin
+girdisidir.
+
+---
+
+## Jog: hiz, tepkisellik ve durma
+
+Mach3'un COM arayuzunde **gercek bir "surekli jog" cagrisi yoktur**; basili
+tut hareketi, kisa artimli adimlarin **zincirlenmesiyle** uretilir. Hissiyati
+Mach3'e yaklastiran uc kural:
+
+| Kural | Neden |
+|---|---|
+| `adim = feed/60 × tik × ortusme` | Her adim, bir sonraki gelene kadar **bitmemeli**. Adim sabit bir tavana (eski surumde 5 mm) sikistirilirsa hizli jogda eksen adimlar arasinda durur — "tik tik" hissiyati. |
+| Adim basina **tek** MDI satiri | Eskiden her adimda `G91` + `G1 …` + `G90` diye **uc** COM cagrisi gidiyordu. Artik `G91` basta bir kez, `G90` sonda bir kez gonderilir. |
+| Birakinca **Feed Hold + Stop** | Yoksa parmagi cektikten sonra eksen kuyrukta kalan adimi tamamlayana kadar kayar. Feed Hold Mach3'un kendi yavaslama rampasini kullanir, sert kesme olmadigi icin adim kaybi riski dogurmaz. |
+
+### Iki hiz: yon tusu ve Shift + yon
+
+| Giris | Hiz |
+|---|---|
+| <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> | `jog_yavas_feed` (varsayilan **600 mm/dk**) |
+| <kbd>Shift</kbd> + ayni tuslar | `jog_hizli_feed` (varsayilan **4000 mm/dk**) |
+
+Basili tutarken <kbd>Shift</kbd>'e basip birakmak hizi **jogu kesmeden**
+degistirir (zincir kirilsa eksen bir an dururdu). Ikisi de *Kontrol*
+sayfasindaki kutulardan ya da *Guvenlik > Surekli jog hissiyati*'ndan
+ayarlanir; `max_jog_feed` her ikisini de ust sinirdan kirpar.
+
+Jog tuslari **klavye kilidi kapaliyken de** calisir — kilit yalnizca
+Windows/Alt/Tab gibi tuslari yutmak icindir. Bir yazi alanina yazarken ya da
+bir pencere acikken tuslar jog yapmaz.
+
+### Ince ayar (*Guvenlik > Surekli jog hissiyati*)
+
+| Ayar | Varsayilan | Etkisi |
+|---|---|---|
+| `jog_tik_ms` | 80 | Zincirdeki adim araligi. Kuculdukce tepki artar, COM trafigi de artar. |
+| `jog_ortusme` | 1.35 | Adim uzunlugu carpani. Kucultursaniz eksen takilir; buyutursaniz birakinca sonlanma mesafesi uzar. |
+| `jog_birakinca_durdur` | acik | Birakinca Feed Hold + Stop ile kuyrugu bosaltir. |
+
+Iki koruma her adimda ayrica gecerlidir: **kalp atisi** (istemci susarsa
+hareket durur) ve **yumusak limit**. Limit denetimi, DRO'dan okunan degil
+**gonderilen** konuma gore yapilir — yoklama 100 ms geriden geldigi icin, uzun
+adimlarda okunan konuma guvenmek siniri sessizce astirabilirdi.
+
+Program **calisirken** surekli jog reddedilir (birakinca gonderilen Feed
+Hold/Stop, calisan programi keserdi).
+
+---
+
 ## Klavye kisayollari
 
 | Tus | Islem |
@@ -380,6 +504,47 @@ benzerleri bu surumde yok). Bu yuzden ilerleme, DRO'dan okunan konumla
 **kat edilen yoldan** hesaplanir ve blok sinirlariyla eslestirilir. Toplam
 sure ve toplam yol her zaman dogrudur; ayni yerden tekrar gecen yollarda
 blok eslestirmesi kayabilir.
+
+---
+
+## Dosya secme ve onizleme olculeri
+
+### Gezgin
+
+* **Kaldiginiz yerden acilir.** Gezgin, en son *bakilan* klasoru hatirlar —
+  dosya acmadan cikmis olsaniz bile. (Bu, en son *calisilan* klasorden
+  ayridir; ona da listenin basindaki "Son calisilan klasor" kisayoluyla
+  donersiniz.)
+* **En son degisiklik yapilan en ustte.** Varsayilan siralama tarihe goredir,
+  klasorler de dosyalar da yeniden eskiye dizilir; CAM'den yeni cikan is hep
+  ilk siradadir. Ust kosedeki secimle "Ada gore"ye gecebilirsiniz, secim
+  hatirlanir.
+* **Suzgec** listenin ustundedir ve istemcide calisir (her tusa basista
+  sunucuya gitmez); <kbd>Enter</kbd> ilk eslesmeyi acar, <kbd>Esc</kbd>
+  suzgeci temizler.
+* Klasor okuma `os.scandir` ile **tek gecistir**; onceki surum her girdi icin
+  ayri `isdir` + `stat` cagiriyordu ve ag surucusunde (`\\sunucu\isler`)
+  gezgin gozle gorulur sekilde takiliyordu.
+
+### Kesim alani olculeri
+
+Takim yolu onizlemesinin altinda, malzemeyi baglamadan once gereken olculer
+yazar:
+
+| Olcu | Anlami |
+|---|---|
+| **kesim alani** | Yalnizca kesim bloklarinin kapladigi alan (`genislik × yukseklik`), yaylarin gercek gecisleri dahil |
+| **X / Y** | Is koordinatinda kesimin ulastigi aralik |
+| **en sag / en ust** | X0 ve Y0'a gore en uzak noktalar |
+| **X0Y0'dan** | Parcanin sol-alt kosesinin is sifirina uzakligi |
+| **kosegen** | Kesim alaninin kosegeni |
+| **Z** | En derin ve en yuksek Z |
+| **hareket zarfi** | Bosta (G0) gidisler **dahil** tum hareket alani — yumusak limitleri asan genelde budur, kesim alani degil |
+
+Onizlemede ayrica kesim alani **kesikli mavi bir kutuyla** cizilir (ustunde
+genislik, saginda yukseklik) ve is sifiri **kirmizi bir arti + "X0 Y0"**
+etiketiyle isaretlenir; boylece parcanin sifira gore nerede durdugu tek
+bakista gorunur.
 
 ---
 
@@ -523,8 +688,9 @@ python main.py --sira kesim.tap    # blok blok liste (sure dahil)
 
 | Sekme | Icerik |
 |---|---|
-| **Kontrol** | DRO (is + makine), jog padi (adim / basili tut), hassas hareket, kaydirmali sifirlama, klavye kilidi, MDI |
-| **Program & Sira** | Dosya secme, numarali kesim sirasi, takim yolu onizlemesi, sure tahmini, guvenlik denetimi, baslat/feed hold/durdur |
+| **Kontrol** | DRO (is + makine), jog padi (adim / basili tut), **yavas/hizli jog hizlari**, hassas hareket, kaydirmali sifirlama, klavye kilidi, MDI |
+| **Program & Sira** | Dosya secme, numarali kesim sirasi, takim yolu onizlemesi, **kesim alani olculeri**, sure tahmini, guvenlik denetimi, baslat/feed hold/durdur |
+| **Kalibrasyon** | Kumpasla adim/mm (Steps per unit) ve bosluk olcumu, Mach3'e girilecek degerler |
 | **Guvenlik** | Yumusak limitler, hareket sinirlari, guncel guvenlik durumu |
 | **Ayarlar** | Baglanti (COM/simulasyon, ProgID), makine (hiz/ivme/sifirlama yontemi), **OEM kod haritasi** |
 | **Gunluk** | Gonderilen her komut, her guvenlik reddi, her acil durdurma |
@@ -566,12 +732,21 @@ sure tahminini makineye hic dokunmadan denemek icin kullanin.
                        "Y": {"min":0,"max":1500},
                        "Z": {"min":-150,"max":0} },
     "max_jog_adim": 100, "max_jog_feed": 6000,
+    "jog_yavas_feed": 600, "jog_hizli_feed": 4000,   // yon tusu / Shift+yon
+    "jog_tik_ms": 80, "jog_ortusme": 1.35,           // surekli jog akiciligi
+    "jog_birakinca_durdur": true,
     "guvenli_z": 20, "max_dalis_derinlik": -60,
     "max_surekli_jog_sn": 30, "jog_kalp_atisi_ms": 400,
     "pin": "……"
   },
   "klavye": { "kilit_acilista": false, "odak_bekcisi": true,
-              "odak_pencere_baslik": "Mach3" }
+              "odak_pencere_baslik": "Mach3" },
+  "kalibrasyon": {
+    "adim_basi": { "X": null, "Y": null, "Z": null },  // Mach3'teki Steps per
+    "bosluk":    { "X": null, "Y": null, "Z": null },  // olculen backlash (mm)
+    "olcum_mesafe": 100, "olcum_feed": 300, "on_yaklasma": 5,
+    "tekrar": 3, "kumpas_cozunurluk": 0.01
+  }
 }
 ```
 
@@ -595,6 +770,7 @@ mach3-mod/
 │   ├── klavye_kilidi.py           # Windows klavye hooku + odak bekcisi
 │   ├── gcode.py                   # blok ayristirma, kapsam, bloktan baslatma
 │   ├── sure.py                    # kesim suresi tahmini
+│   ├── kalibrasyon.py             # kumpasla adim/bosluk olcumu + Mach3 talimati
 │   ├── denetleyici.py             # hepsini birlestiren beyin
 │   ├── webapp.py                  # bagimliliksiz web sunucusu + API + SSE
 │   └── web/                       # arayuz (index.html · app.css · app.js)
@@ -613,6 +789,8 @@ python tests/test_gcode.py         # blok ayristirma, yay kapsami, bloktan basla
 python tests/test_guvenlik.py      # limit reddi, kalp atisi, kontrol kilidi
 python tests/test_sure.py          # sure modeli
 python tests/test_denetleyici.py   # uctan uca (simulasyon): jog, sifirlama, baslatma
+python tests/test_jog.py           # surekli jog: adim uzunlugu, tek satir MDI, birakinca durma
+python tests/test_kalibrasyon.py   # kumpas olcumu, adim/mm hesabi, Mach3 talimati
 python tests/test_web.py           # HTTP API + olay akisi
 ```
 
@@ -623,11 +801,16 @@ python tests/test_web.py           # HTTP API + olay akisi
 * Gercek baglanti icin **Windows + Mach3 + pywin32** gerekir; digerlerinde
   yalnizca simulasyon calisir.
 * Mach3'un COM arayuzunde guvenilir bir "surekli jog" cagrisi yoktur; basili
-  tut modu, **kisa artimli adimlarin** zincirlenmesiyle uretilir. Her adim
-  ayri ayri denetlenir ve kalp atisi kesilince zincir aninda durur. Bu,
-  Mach3'un kendi jogundan biraz daha az akici ama daha guvenlidir.
+  tut modu, **kisa artimli adimlarin** zincirlenmesiyle uretilir (bkz.
+  "Jog: hiz, tepkisellik ve durma"). Her adim ayri ayri denetlenir, kalp
+  atisi kesilince zincir aninda durur ve birakinca kuyruk Feed Hold + Stop
+  ile bosaltilir. Yine de araya bir ag turu girdigi icin tepki, Mach3'un
+  kendi klavye jogundan **bir tik** daha gectir.
 * Program calisirken "kacinci bloktayim" bilgisi Mach3'ten okunmaz; ilerleme
   cubugu yerine **tahmini sure** gosterilir.
+* Mach3'un COM arayuzu **`Steps per unit` ve `Backlash` degerlerini ne okur ne
+  yazar.** Kalibrasyon sekmesi olcumu ve hesabi yapar, degeri Mach3'un ilgili
+  penceresine **operator** girer.
 
 ---
 

@@ -17,7 +17,7 @@ import copy
 import json
 import os
 
-SURUM = 3
+SURUM = 5
 
 VARSAYILAN = {
     "surum": SURUM,
@@ -83,6 +83,22 @@ VARSAYILAN = {
         "max_jog_feed": 6000.0,         # jog beslemesi ust siniri (mm/dk)
         "max_surekli_jog_sn": 30.0,     # surekli jog en fazla bu kadar surer
         "jog_kalp_atisi_ms": 400,       # istemciden bu araliktan seyrek gelirse dur
+
+        # --------------------------------------------------------------
+        # SUREKLI JOG'UN HISSIYATI (Mach3'e yakin tepkisellik icin)
+        # Mach3'un COM arayuzunde gercek bir "surekli jog" cagrisi yoktur;
+        # hareket, kisa artimli adimlarin ZINCIRLENMESIYLE uretilir. Akici
+        # olmasi icin her adim, bir sonraki gelene kadar bitmemelidir:
+        #     adim_mm = feed/60 * tik * ortusme        (ortusme > 1)
+        # Ortusme buyudukce hareket akici ama birakinca sonlanma mesafesi
+        # uzun olur; kucuk oldugunda eksen adimlar arasinda "tik tik" durur.
+        "jog_yavas_feed": 600.0,        # yon tusu / dokunma: hassas jog
+        "jog_hizli_feed": 4000.0,       # Shift + yon tusu: hizli jog
+        "jog_tik_ms": 80,               # zincirdeki adim araligi (ms)
+        "jog_ortusme": 1.35,            # adim uzunlugu carpani (>1)
+        # Birakinca Mach3'un Feed Hold + Stop'u ile kuyrugu bosalt. Kapali
+        # ise eksen, kuyrukta kalan son adimi tamamlayana kadar surer.
+        "jog_birakinca_durdur": True,
 
         "guvenli_z": 20.0,              # XY hareketi oncesi olmasi gereken Z
         "guvenli_z_zorunlu": True,      # XY tasima once Z'yi guvenli yuksekli§e al
@@ -153,8 +169,34 @@ VARSAYILAN = {
         "yeni_sayilir_dk": 120,          # bu kadar once degismis dosyalar "yeni"
     },
 
+    # ------------------------------------------------------------------
+    # KALIBRASYON (dijital kumpasla)
+    # Mach3'un COM arayuzu "Steps per unit" ve "Backlash" degerlerini NE
+    # OKUR NE DE YAZAR; bunlar yalnizca Mach3'un kendi pencerelerinden
+    # degistirilebilir. Burada tutulanlar:
+    #   adim_basi - Mach3 > Config > Motor Tuning'deki GUNCEL deger (elle
+    #               girilir). Yeni degeri hesaplayabilmek icin gereklidir.
+    #   bosluk    - olculen backlash (Mach3 > Config > Backlash'e yazilir)
+    # Ikisi de yalnizca KAYIT amaclidir; makineyi bu dosya degil, Mach3'e
+    # yazdiginiz degerler kalibre eder.
+    "kalibrasyon": {
+        "adim_basi": {"X": None, "Y": None, "Z": None},   # steps / mm
+        "bosluk": {"X": None, "Y": None, "Z": None},      # mm
+        "olcum_mesafe": 100.0,          # kumpas araligina sigmali (mm)
+        "olcum_feed": 300.0,            # yavas ve tekrarlanabilir (mm/dk)
+        "on_yaklasma": 5.0,             # bosluk alma mesafesi (mm)
+        "tekrar": 3,                    # kac olcum ortalanacak
+        "kumpas_cozunurluk": 0.01,      # dijital kumpasin adimi (mm)
+        "gecmis": [],                   # uygulanan kalibrasyonlarin kaydi
+    },
+
     "gcode": {
-        "son_klasor": "",
+        "son_klasor": "",               # en son PROGRAM yuklenen klasor
+        # Dosya gezgininde en son BAKILAN klasor. Ayri tutulur: kullanici
+        # dosya acmadan gezinip cikabilir, bir dahaki acilista yine ayni
+        # yerden devam etmek ister.
+        "gozat_klasor": "",
+        "gozat_siralama": "tarih",      # "tarih" (yeni ustte) | "ad"
         "sure_katsayi": 1.0,            # tahmini sureyi kalibre etmek icin
         "takim_degisim_sn": 20.0,
         "spindle_bekleme_sn": 4.0,
@@ -186,6 +228,19 @@ def _gocur(veri):
         # tehlikelidir (yanlis guven verir). null birakilir; arayuz
         # "olculmedi" uyarisi gosterir ve kullanicidan olcmesini ister.
         veri.setdefault("guvenlik", {}).setdefault("makine_z_taban", None)
+    if surum < 4:
+        # Surum 4: kumpasla kalibrasyon bolumu eklendi. Adim sayilarini
+        # TAHMIN ETMIYORUZ - yanlis bir "mevcut deger" hesabi da bozar.
+        # None birakilir; arayuz Mach3'ten okumanizi ister.
+        veri.setdefault("kalibrasyon", {})
+    if surum < 5:
+        # Surum 5: surekli jog yeniden yazildi (tek MDI satiri, canli hiz,
+        # birakinca Feed Hold+Stop). Eski dosyalarda bu alanlar yok;
+        # varsayilanlar `_birlestir` ile gelir. Eski `jog_kalp_atisi_ms`
+        # 400 ms yeni tik suresine (80 ms) gore fazla toleransli kalmasin.
+        g = veri.setdefault("guvenlik", {})
+        if float(g.get("jog_kalp_atisi_ms", 400)) > 400:
+            g["jog_kalp_atisi_ms"] = 400
     veri["surum"] = SURUM
     return True, veri
 

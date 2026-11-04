@@ -173,6 +173,7 @@ function durumCiz(d) {
     (kritik || S.kilitli || kl.aktif ? " tehlike" : "");
 
   guvenlikDurumCiz(d);
+  kalibrasyonCiz(d.kalibrasyon);
 }
 
 /* ================================================================== */
@@ -185,6 +186,7 @@ function sekmeGec(ad) {
   if (s) s.classList.add("aktif");
   if (ad === "ayarlar" || ad === "guvenlik") ayarlariYukle();
   if (ad === "rapor") raporCiz();
+  if (ad === "kalibrasyon") { kalSecimCiz(); kalTazele(true); }
   // Onizleme gizliyken cizilirse SVG olculeri 0 olur; sekmeye gelince tazele
   if (ad === "tezgah") onizlemeCiz("#onizlemeMini");
   if (ad === "program") onizlemeCiz();
@@ -246,33 +248,62 @@ $$("#jogModu button").forEach(b => b.onclick = () => {
 $$("#jogModu button").forEach(b =>
   b.classList.toggle("aktif", b.dataset.mod === S.jogModu));
 
-const jogFeed = () => parseFloat($("#jogFeed").value) || 1000;
+/* Jog hizi: yon tusu = yavas, Shift + yon = hizli. Degerler sunucudaki
+   guvenlik ayarindan gelir (ust sinir orada uygulanir), ama arayuzde de
+   duzenlenebilir. */
+const jogYavas = () => parseFloat($("#jogYavas").value) ||
+  ((S.durum && S.durum.guvenlik && S.durum.guvenlik.jog_yavas_feed) || 600);
+const jogHizli = () => parseFloat($("#jogHizli").value) ||
+  ((S.durum && S.durum.guvenlik && S.durum.guvenlik.jog_hizli_feed) || 4000);
+const jogFeed = (hizli) => (hizli ? jogHizli() : jogYavas());
 
-async function jogBasla(eksen, yon) {
+async function jogBasla(eksen, yon, hizli = false) {
   if (S.jogAktif) return;
-  S.jogAktif = { eksen, yon };
+  S.jogAktif = { eksen, yon, hizli };
+  jogRozetCiz(true, hizli);
   try {
-    await api("/api/jog/basla", { eksen, yon, feed: jogFeed() });
+    await api("/api/jog/basla", { eksen, yon, hizli, feed: jogFeed(hizli) });
+    // Kalp atisi tik suresinden kisa olmali; kesilirse sunucu hareketi
+    // olu adam butonu gibi durdurur.
     S.kalpZaman = setInterval(() => {
       api("/api/jog/kalp").catch(() => jogBitir());
-    }, 150);
+    }, 100);
   } catch (e) {
     S.jogAktif = null;
+    jogRozetCiz(false);
     bildir(e.message, "hata", e.sebepler || []);
   }
 }
 
+/* Basili tutarken Shift'e basmak/birakmak: jogu KESMEDEN hizi degistirir.
+   Kesip yeniden baslatmak eksenin bir an durmasina yol acardi. */
+function jogHizGuncelle(hizli) {
+  if (!S.jogAktif || S.jogAktif.hizli === hizli) return;
+  S.jogAktif.hizli = hizli;
+  jogRozetCiz(true, hizli);
+  api("/api/jog/hiz", { hizli, feed: jogFeed(hizli) }).catch(() => {});
+}
+
 function jogBitir() {
   if (S.kalpZaman) { clearInterval(S.kalpZaman); S.kalpZaman = null; }
+  jogRozetCiz(false);
   if (!S.jogAktif) return;
   S.jogAktif = null;
   $$(".jog").forEach(b => b.classList.remove("basili"));
   api("/api/jog/bitir").catch(() => {});
 }
 
-async function jogAdim(eksen, yon) {
+function jogRozetCiz(aktif, hizli = false) {
+  const r = $("#jogRozet");
+  if (!r) return;
+  r.classList.toggle("gizli", !aktif);
+  r.textContent = aktif ? (hizli ? "HIZLI JOG" : "JOG") : "JOG";
+  r.classList.toggle("hizli", !!hizli);
+}
+
+async function jogAdim(eksen, yon, hizli = false) {
   await calis(() => api("/api/jog/adim",
-    { eksen, mesafe: yon * S.adim, feed: jogFeed() }));
+    { eksen, mesafe: yon * S.adim, hizli, feed: jogFeed(hizli) }));
 }
 
 $$(".jog[data-eksen]").forEach(b => {
@@ -280,17 +311,24 @@ $$(".jog[data-eksen]").forEach(b => {
   b.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     b.classList.add("basili");
-    if (S.jogModu === "surekli") jogBasla(eksen, yon);
+    if (S.jogModu === "surekli") jogBasla(eksen, yon, e.shiftKey);
   });
   const birak = () => { b.classList.remove("basili"); jogBitir(); };
   b.addEventListener("pointerup", (e) => {
     e.preventDefault();
-    if (S.jogModu === "adim") jogAdim(eksen, yon); else birak();
+    if (S.jogModu === "adim") jogAdim(eksen, yon, e.shiftKey); else birak();
     b.classList.remove("basili");
   });
   b.addEventListener("pointerleave", birak);
   b.addEventListener("pointercancel", birak);
 });
+
+$("#jogHizKaydet").onclick = async () => {
+  await calis(() => api("/api/ayarlar", { yama: { guvenlik: {
+    jog_yavas_feed: jogYavas(), jog_hizli_feed: jogHizli() } } }),
+    "Jog hizlari kaydedildi");
+  ayarlariYukle();
+};
 
 // Guvenlik: sayfa gizlenir / pencere odagi giderse hareket durur.
 document.addEventListener("visibilitychange", () => { if (document.hidden) jogBitir(); });
@@ -403,6 +441,10 @@ function froKisayolu(e) {
   return 0;
 }
 
+/* Acik bir pencere (PIN, DRO, referans, gezgin, profil) varken jog tuslari
+   calismamali: kullanici orada yazi yaziyordur. */
+const katmanAcik = () => $$(".katman").some(k => !k.classList.contains("gizli"));
+
 document.addEventListener("keydown", (e) => {
   // DRO penceresi acikken kisayollari tekrar isleme
   if (!$("#droKatman").classList.contains("gizli")) {
@@ -423,26 +465,39 @@ document.addEventListener("keydown", (e) => {
   }
 
   if (e.key === "Escape") { e.preventDefault(); acilDurdur("Esc"); return; }
-  if (!S.kilitli) return;
-  if (YAZI_ALANI(e.target) && !TUS_EKSEN[e.key]) return;   // ayar yazarken serbest
 
+  /* ---- JOG TUSLARI ----
+     Mach3'teki gibi her zaman calisir; klavye kilidi SART DEGILDIR (kilit
+     yalnizca Windows/Alt/Tab gibi tuslari yutmak icindir). Shift basiliysa
+     hizli jog. Tus tekrari, basili tutarken Shift'e basilip birakilmasini
+     yakalamak icin de kullanilir. */
   const es = TUS_EKSEN[e.key];
-  if (es) {
+  if (es && !YAZI_ALANI(e.target) && !katmanAcik()) {
     e.preventDefault();
-    if (e.repeat) return;
-    if (S.jogModu === "surekli") jogBasla(es[0], es[1]);
-    else jogAdim(es[0], es[1]);
+    if (e.repeat) { jogHizGuncelle(e.shiftKey); return; }
+    if (S.jogModu === "surekli") jogBasla(es[0], es[1], e.shiftKey);
+    else jogAdim(es[0], es[1], e.shiftKey);
     return;
   }
-  if (e.key === " ") { e.preventDefault(); api("/api/feedhold").catch(() => {}); return; }
+  if (e.key === "Shift") { jogHizGuncelle(true); return; }
+  if (e.key === " " && !YAZI_ALANI(e.target) && !katmanAcik()) {
+    e.preventDefault();
+    api("/api/feedhold").catch(() => {});
+    return;
+  }
+
+  if (!S.kilitli) return;
+  if (YAZI_ALANI(e.target)) return;        // ayar yazarken serbest
   // Kilit acikken geri kalan HER tus yutulur (Alt, Tab, Win kombinasyonlari...)
   e.preventDefault();
   e.stopPropagation();
 }, true);
 
 document.addEventListener("keyup", (e) => {
-  if (!S.kilitli) return;
-  if (TUS_EKSEN[e.key]) { e.preventDefault(); jogBitir(); }
+  // Kilit acik olmasa da jog BIRAKINCA durmalidir; bu, hareketi durduran
+  // yoldur ve hicbir kosula baglanamaz.
+  if (TUS_EKSEN[e.key]) { e.preventDefault(); jogBitir(); return; }
+  if (e.key === "Shift") jogHizGuncelle(false);
 }, true);
 
 $("#kilitAnahtar").onchange = async (e) => {
@@ -460,30 +515,91 @@ $("#kilitAnahtar").onchange = async (e) => {
 $("#gozatBtn").onclick = () => gezginAc();
 $("#gezginKapat").onclick = () => $("#gezginKatman").classList.add("gizli");
 
-async function gezginAc(klasor) {
-  const d = await calis(() => api("/api/gozat", { klasor }));
+/* Dosya gezgini
+   -------------------------------------------------------------------
+   * Sunucu en son BAKILAN klasoru hatirlar; gezgin hep kaldiginiz yerden
+     acilir (dosya acmadan cikmis olsaniz bile).
+   * Varsayilan siralama "en son degisiklik ustte": yeni is klasoru ilk
+     siradadir, tarih klasorleri arasinda gezinmek gerekmez.
+   * Suzgec istemcide calisir - her tusa basista sunucuya gitmek, ag
+     surucusunde gozle gorulur gecikme demektir. */
+const GEZ = { veri: null, suz: "" };
+
+const zamanKisa = (t) => {
+  if (!t) return "";
+  const dk = (Date.now() / 1000 - t) / 60;
+  if (dk < 1) return "az once";
+  if (dk < 60) return `${Math.round(dk)} dk once`;
+  if (dk < 24 * 60) return `${Math.round(dk / 60)} sa once`;
+  if (dk < 7 * 24 * 60) return `${Math.round(dk / 1440)} gun once`;
+  return new Date(t * 1000).toLocaleDateString("tr-TR");
+};
+
+async function gezginAc(klasor, siralama) {
+  const d = await calis(() => api("/api/gozat", { klasor, siralama }));
   if (!d) return;
+  GEZ.veri = d;
   $("#gezginKatman").classList.remove("gizli");
+  $$("#gezginSira button").forEach(b =>
+    b.classList.toggle("aktif", b.dataset.s === d.siralama));
+  gezginCiz();
+  setTimeout(() => { const s = $("#gezginSuz"); if (s) s.focus(); }, 30);
+}
+
+function gezginCiz() {
+  const d = GEZ.veri;
+  if (!d) return;
   $("#gezginYol").textContent = d.klasor;
-  const parcalar = [];
-  if (d.ust) parcalar.push(
-    `<div class="oge" data-k="${kacir(d.ust)}"><span class="ik">↰</span>
-     <span class="isim">.. ust klasor</span></div>`);
-  parcalar.push(`<div class="oge" data-k="${kacir(d.ev)}"><span class="ik">⌂</span>
-     <span class="isim">Ev</span></div>`);
-  d.klasorler.forEach(k => parcalar.push(
+  const q = GEZ.suz.trim().toLowerCase();
+  const uyar = (o) => !q || o.ad.toLowerCase().includes(q);
+  const klasorler = d.klasorler.filter(uyar);
+  const dosyalar = d.dosyalar.filter(uyar);
+
+  const p = [];
+  if (!q) {
+    if (d.ust) p.push(
+      `<div class="oge" data-k="${kacir(d.ust)}"><span class="ik">↰</span>
+       <span class="isim">.. ust klasor</span></div>`);
+    p.push(`<div class="oge" data-k="${kacir(d.ev)}"><span class="ik">⌂</span>
+       <span class="isim">Ev</span></div>`);
+    if (d.son_klasor && d.son_klasor !== d.klasor) p.push(
+      `<div class="oge" data-k="${kacir(d.son_klasor)}"><span class="ik">↩</span>
+       <span class="isim">Son calisilan klasor</span>
+       <span class="sag">${kacir(d.son_klasor)}</span></div>`);
+  }
+  klasorler.forEach(k => p.push(
     `<div class="oge" data-k="${kacir(k.yol)}"><span class="ik">📁</span>
-     <span class="isim">${kacir(k.ad)}</span></div>`));
-  d.dosyalar.forEach(f => parcalar.push(
-    `<div class="oge" data-d="${kacir(f.yol)}"><span class="ik">📄</span>
+     <span class="isim">${kacir(k.ad)}</span>
+     <span class="sag zaman">${zamanKisa(k.zaman)}</span></div>`));
+  dosyalar.forEach(f => p.push(
+    `<div class="oge dosya" data-d="${kacir(f.yol)}"><span class="ik">📄</span>
      <span class="isim">${kacir(f.ad)}</span>
+     <span class="sag zaman">${zamanKisa(f.zaman)}</span>
      <span class="sag">${(f.boyut / 1024).toFixed(0)} KB</span></div>`));
-  $("#gezgin").innerHTML = parcalar.join("");
+  if (!p.length)
+    p.push(`<div class="bos-mesaj">Eslesen dosya/klasor yok.</div>`);
+  $("#gezgin").innerHTML = p.join("");
   $$("#gezgin .oge").forEach(o => o.onclick = () => {
-    if (o.dataset.k) gezginAc(o.dataset.k);
+    if (o.dataset.k) { GEZ.suz = ""; $("#gezginSuz").value = ""; gezginAc(o.dataset.k); }
     else { $("#gezginKatman").classList.add("gizli"); programYukle(o.dataset.d); }
   });
 }
+
+$("#gezginSuz").addEventListener("input", (e) => {
+  GEZ.suz = e.target.value;
+  gezginCiz();
+});
+$("#gezginSuz").addEventListener("keydown", (e) => {
+  e.stopPropagation();                       // jog/kilit yakalayicisina gitmesin
+  if (e.key === "Escape") { e.target.value = ""; GEZ.suz = ""; gezginCiz(); }
+  if (e.key === "Enter") {
+    // Tek eslesme varsa dogrudan ac: klasor agacinda hizli gezinme
+    const ilk = $("#gezgin .oge");
+    if (ilk) ilk.click();
+  }
+});
+$$("#gezginSira button").forEach(b => b.onclick = () =>
+  gezginAc(GEZ.veri && GEZ.veri.klasor, b.dataset.s));
 
 async function programYukle(yol) {
   const p = await calis(() => api("/api/program/yukle", { yol }),
@@ -510,6 +626,7 @@ function programCiz(p) {
     blokSec(parseInt(el.dataset.i, 10)));
   blokIsaretle(p.secili_blok);
   sureCiz(p.sure);
+  olcuCiz(p);
   onizlemeCiz();
   blokListeMiniCiz(p);
   tSureCiz(p.sure);
@@ -528,6 +645,7 @@ async function blokSec(i) {
   blokMiniIsaretle(i);
   sureCiz(p.sure);
   tSureCiz(p.sure);
+  olcuCiz(p);
   onizlemeCiz();
   onizlemeCiz("#onizlemeMini");
   $("#onayKutu").checked = false;
@@ -564,6 +682,40 @@ function sureCiz(t) {
       Ayarlar > Sure kalibrasyonu ile ince ayar yapabilirsiniz.</div>`;
 }
 
+/* ---- kesim alani olculeri ----
+   "Parca ne kadar yer kaplayacak, is sifirina gore nerede duruyor" sorusu
+   malzemeyi baglamadan once yanitlanmali. Iki kapsam ayri gosterilir:
+   kesim alani (yalnizca kesim bloklari) ve tum hareket zarfi (G0 dahil) —
+   yumusak limitleri asan genelde ikincisidir. */
+function olcuCiz(p) {
+  const o = p && p.olcu;
+  const kutu = (v) => v == null ? "–" : v.toFixed(1);
+  ["#olcuSerit", "#olcuSeritMini"].forEach((sec) => {
+    const el = $(sec);
+    if (!el) return;
+    if (!o || !o.kesim) { el.innerHTML = ""; return; }
+    const k = o.kesim, t = o.tum, s = o.sifira_gore, z = o.z || {};
+    const oge = (ad, deger, ipucu = "") =>
+      `<span class="olcu-oge" title="${kacir(ipucu)}">
+         <i>${ad}</i><b>${deger}</b></span>`;
+    el.innerHTML =
+      oge("kesim alani",
+          `${kutu(k.genislik)} × ${kutu(k.yukseklik)} mm`,
+          "Yalnizca kesim bloklarinin kapladigi alan (yaylar dahil)") +
+      oge("X", `${kutu(k.x[0])} … ${kutu(k.x[1])}`, "Is koordinatinda X araligi") +
+      oge("Y", `${kutu(k.y[0])} … ${kutu(k.y[1])}`, "Is koordinatinda Y araligi") +
+      oge("en sag", `${kutu(s.sag)} mm`, "X0'a gore en uzak nokta") +
+      oge("en ust", `${kutu(s.ust)} mm`, "Y0'a gore en uzak nokta") +
+      oge("X0Y0'dan", `←${kutu(s.sol)} ↓${kutu(s.alt)} mm`,
+          "Parcanin sol-alt kosesinin is sifirina uzakligi") +
+      oge("kosegen", `${kutu(s.kosegen)} mm`, "Kesim alaninin kosegeni") +
+      oge("Z", `${kutu(z.min)} … ${kutu(z.max)}`, "En derin / en yuksek Z") +
+      oge("hareket zarfi", `${kutu(t.genislik)} × ${kutu(t.yukseklik)} mm`,
+          "Bosta (G0) gidisler dahil tum hareket alani — yumusak limitler "
+          + "bunu denetler");
+  });
+}
+
 /* ---- takim yolu onizlemesi ---- */
 /* Ayni cizim iki yerde kullanilir: Program sekmesindeki buyuk onizleme ve
    Tezgah sekmesindeki tek-ekran onizlemesi. Gorunum (zoom/pan) durumu her
@@ -582,7 +734,11 @@ function onizlemeCiz(kapSecici = "#onizleme") {
     x0 = Math.min(x0, b.bbox[0]); y0 = Math.min(y0, b.bbox[1]);
     x1 = Math.max(x1, b.bbox[2]); y1 = Math.max(y1, b.bbox[3]);
   });
-  const pay = Math.max((x1 - x0), (y1 - y0)) * 0.06 + 2;
+  // Is sifiri (X0 Y0) her zaman gorunsun: parcanin sifira gore NEREDE
+  // durdugu, kesim alaninin kendisi kadar onemlidir.
+  x0 = Math.min(x0, 0); y0 = Math.min(y0, 0);
+  x1 = Math.max(x1, 0); y1 = Math.max(y1, 0);
+  const pay = Math.max((x1 - x0), (y1 - y0)) * 0.08 + 2;
   x0 -= pay; y0 -= pay; x1 += pay; y1 += pay;
   S.gorunumler = S.gorunumler || {};
   if (!S.gorunumler[kapSecici] || S.gorunumler[kapSecici].ad !== p.ad)
@@ -610,19 +766,43 @@ function onizlemeCiz(kapSecici = "#onizleme") {
 
   const g = S.gorunum;
   const nb = () => g.y2 / 34;                  // gorunume gore yazi boyutu
-  const noktalar = p.bloklar.map(b =>
-    `<circle class="yol-nokta ${b.id === secili ? "secili" : ""}"
-       cx="${b.x}" cy="${-b.y}" r="${(nb() / 4).toFixed(2)}"/>`).join("");
-  const numaralar = numara ? p.bloklar.map(b =>
-    `<text class="yol-no ${b.id === secili ? "secili" : ""}"
-       x="${b.x + nb() * 0.4}" y="${-b.y - nb() * 0.4}">${b.no}</text>`
-  ).join("") : "";
+
+  /* Isaret katmani: blok noktalari/numaralari + kesim alani olculeri.
+     Yakinlastirmada yazi boyutu ve etiket konumlari degistigi icin tek
+     fonksiyondan uretilir ve zoom'da yeniden cizilir. */
+  const isaretKat = () => {
+    const b0 = nb();
+    const noktalar = p.bloklar.map(b =>
+      `<circle class="yol-nokta ${b.id === secili ? "secili" : ""}"
+         cx="${b.x}" cy="${-b.y}" r="${(b0 / 4).toFixed(2)}"/>`).join("");
+    const numaralar = numara ? p.bloklar.map(b =>
+      `<text class="yol-no ${b.id === secili ? "secili" : ""}"
+         x="${b.x + b0 * 0.4}" y="${-b.y - b0 * 0.4}">${b.no}</text>`
+    ).join("") : "";
+    /* Kesim alani kutusu + is sifiri isareti. Bu katmanin Y'si onceden
+       ters cevrilmis koordinat kullanir (yol katmani scale(1,-1) ile
+       cevriliyor), bu yuzden y yerine -y yazilir. */
+    const k = p.olcu && p.olcu.kesim;
+    const olcu = !k ? "" : `
+      <rect class="olcu-kutu" x="${k.x[0]}" y="${-k.y[1]}"
+            width="${Math.max(k.genislik, 0.001)}"
+            height="${Math.max(k.yukseklik, 0.001)}"/>
+      <text class="olcu-yazi" text-anchor="middle"
+            x="${(k.x[0] + k.x[1]) / 2}" y="${-k.y[1] - b0 * 0.45}"
+            >${k.genislik.toFixed(1)}</text>
+      <text class="olcu-yazi" x="${k.x[1] + b0 * 0.35}"
+            y="${-(k.y[0] + k.y[1]) / 2}">${k.yukseklik.toFixed(1)}</text>
+      <path class="olcu-sifir" d="M${-b0} 0 H${b0} M0 ${-b0} V${b0}"/>
+      <text class="olcu-yazi sifir" x="${b0 * 0.35}"
+            y="${b0 * 1.25}">X0 Y0</text>`;
+    return olcu + noktalar + numaralar;
+  };
 
   kap.innerHTML = `
     <svg viewBox="${g.x} ${-(g.y + g.y2)} ${g.g} ${g.y2}"
          preserveAspectRatio="xMidYMid meet">
       <g transform="scale(1,-1)">${yollar}${tasimaYolu}</g>
-      <g id="isaretKat" font-size="${nb().toFixed(2)}">${noktalar}${numaralar}</g>
+      <g id="isaretKat" font-size="${nb().toFixed(2)}">${isaretKat()}</g>
     </svg>`;
 
   // tekerlek ile yakinlastir, surukleyerek kaydir
@@ -632,8 +812,7 @@ function onizlemeCiz(kapSecici = "#onizleme") {
     const kat = svg.querySelector("#isaretKat");
     if (kat) {
       kat.setAttribute("font-size", nb().toFixed(2));
-      kat.querySelectorAll("circle").forEach(c =>
-        c.setAttribute("r", (nb() / 4).toFixed(2)));
+      kat.innerHTML = isaretKat();
     }
   };
   svg.onwheel = (e) => {
@@ -1078,6 +1257,360 @@ $("#profilSil").onclick = async () => {
 };
 
 /* ================================================================== */
+/* Kalibrasyon (dijital kumpasla)                                      */
+/* ================================================================== */
+/* Mach3'un COM arayuzu "Steps per unit" ve "Backlash" degerlerini NE OKUR
+   NE YAZAR. Bu yuzden akis su sekildedir:
+     sunucu  -> hareketi guvenlik katmanindan gecirip gonderir, olcumu
+                toplar, yeni degeri hesaplar
+     arayuz  -> operatore SU AN ne yapmasi gerektigini ve sonunda Mach3'un
+                hangi kutusuna hangi sayiyi yazacagini soyler
+   Panel her SSE karesinde degil, yalnizca asama degisince yeniden cizilir;
+   yoksa operator olcumu yazarken alan altindan kayar. */
+const KAL = { eksen: "X", tur: "olcek", yon: 1, imza: "", ayarOzet: null,
+              kayitImza: "" };
+
+const KAL_TUR_NOT = {
+  olcek: `<b>Olcek:</b> eksen tam <i>komut</i> kadar gitti mi? Sapma,
+    Mach3'teki <b>Steps per unit</b> degerinin yanlis oldugunu gosterir;
+    program yeni degeri hesaplar.`,
+  bosluk: `<b>Bosluk (backlash):</b> ayni noktaya iki yonden gelinir. Iki
+    okuma arasindaki fark, vida/kayis boslugudur ve Mach3'un
+    <b>Config → Backlash</b> penceresine yazilir.`,
+  dogrulama: `<b>Dogrulama:</b> olcek olcumunun aynisi, ama hicbir sey
+    hesaplanmaz — yeni degeri Mach3'e yazdiktan sonra <i>gercekten duzeldi
+    mi</i> diye bakmak icindir.`,
+};
+
+function kalSecimCiz() {
+  $$("#kalEksen button").forEach(b =>
+    b.classList.toggle("aktif", b.dataset.e === KAL.eksen));
+  $$("#kalTur button").forEach(b =>
+    b.classList.toggle("aktif", b.dataset.t === KAL.tur));
+  $$("#kalYon button").forEach(b =>
+    b.classList.toggle("aktif", parseInt(b.dataset.y, 10) === KAL.yon));
+  $("#kalTurNot").innerHTML = KAL_TUR_NOT[KAL.tur] || "";
+}
+$$("#kalEksen button").forEach(b => b.onclick = () => {
+  KAL.eksen = b.dataset.e; kalSecimCiz(); kalAdimBasiCiz();
+});
+$$("#kalTur button").forEach(b => b.onclick = () => {
+  KAL.tur = b.dataset.t; kalSecimCiz();
+});
+$$("#kalYon button").forEach(b => b.onclick = () => {
+  KAL.yon = parseInt(b.dataset.y, 10); kalSecimCiz();
+});
+
+/* Form yalnizca sekmeye girerken / kayittan sonra doldurulur; her SSE
+   karesinde doldursa operator sayi yazarken alan altindan kayardi. */
+function kalFormDoldur() {
+  const k = (S.kal && S.kal.ayar) || {};
+  if (k.olcum_mesafe != null) $("#kalMesafe").value = k.olcum_mesafe;
+  if (k.olcum_feed != null) $("#kalFeed").value = k.olcum_feed;
+  if (k.on_yaklasma != null) $("#kalYaklasma").value = k.on_yaklasma;
+  if (k.tekrar != null) $("#kalTekrar").value = k.tekrar;
+  if (k.kumpas_cozunurluk != null)
+    $("#kalCozunurluk").value = k.kumpas_cozunurluk;
+  kalAdimBasiCiz();
+}
+
+function kalAdimBasiCiz() {
+  const k = (S.kal && S.kal.ayar) || {};
+  const ab = k.adim_basi || {}, bo = k.bosluk || {};
+  $("#kalAdimBasiSatirlar").innerHTML = EKSEN3.map(e => `
+    <div class="kal-ab-satir${e === KAL.eksen ? " secili" : ""}">
+      <span class="eksen-adi">${e}</span>
+      <label>Steps per</label>
+      <input type="number" class="alan dar" id="kalAB${e}" step="0.0001"
+             value="${ab[e] == null ? "" : ab[e]}" placeholder="Mach3'ten">
+      <label>Bosluk</label>
+      <input type="number" class="alan dar" id="kalBO${e}" step="0.001"
+             value="${bo[e] == null ? "" : bo[e]}" placeholder="mm">
+    </div>`).join("");
+}
+
+/* ---- ana cizim ----
+   Durum akisinda yalnizca KUCUK bir ozet gelir (sunucudaki
+   `kalibrasyon_ozet`). Ozet degistiginde sihirbaz aninda yeniden cizilir,
+   agir kisim (olcum sonucu, Mach3 talimati, gecmis) ayrica istenir. */
+function kalibrasyonCiz(ozet) {
+  if (!ozet) return;
+  const imza = JSON.stringify(ozet);
+  if (imza === KAL.imza) return;
+  const ayarDegisti =
+    JSON.stringify(ozet.ayar_ozet) !== JSON.stringify(KAL.ayarOzet);
+  KAL.imza = imza;
+  KAL.ayarOzet = ozet.ayar_ozet;
+  kalAkisCiz(ozet.oturum);
+  kalTazele(false, ayarDegisti);
+}
+
+/* Tam durumu sunucudan alir (sonuc + Mach3 talimati + kayitli degerler). */
+async function kalTazele(formDoldur = false, adimBasiTazele = false) {
+  const k = await api("/api/kalibrasyon", { islem: "durum" }).catch(() => null);
+  if (!k) return;
+  S.kal = k;
+  const s = k.son_sonuc || (k.oturum && k.oturum.sonuc) || null;
+  kalSonucCiz(s);
+  kalTalimatCiz(s, k);
+  kalKayitliCiz(k);
+  if (formDoldur) kalFormDoldur();
+  // Adim sayisi alanlarini gereksiz yere yenilemeyiz: operator o sirada
+  // Mach3'ten okudugu degeri yaziyor olabilir.
+  else if (adimBasiTazele) kalAdimBasiCiz();
+}
+
+function kalAkisCiz(o) {
+  const kap = $("#kalAkis");
+  if (!o) { kap.classList.add("gizli"); kap.innerHTML = ""; return; }
+  kap.classList.remove("gizli");
+  const olcumler = (o.olcumler || []).map((v, i) =>
+    `<span class="kal-olcum">${i + 1}. ${v.toFixed(3)} mm</span>`).join("");
+  const hata = o.hata
+    ? `<div class="kal-hata">⚠ ${kacir(o.hata)} — hareket yarida kalmis
+       olabilir; boslugu bastan alin.</div>` : "";
+
+  let govde = "";
+  if (o.asama === "hazir") {
+    govde = `<button class="dugme genis" data-kadim="bosluk_al">
+      1) Boslugu al ve baslangica gel</button>`;
+  } else if (o.asama === "hareket" || o.mesgul) {
+    govde = `<div class="kal-bekle">⟳ eksen hareket ediyor…</div>`;
+  } else if (o.asama === "okuma_a") {
+    govde = `<button class="dugme genis" data-kadim="olc">
+      2) Olcum hareketini yap (${o.tur === "bosluk"
+        ? "ileri-geri" : (o.yon > 0 ? "+" : "−") + o.komut_mm + " mm"})
+      </button>`;
+  } else if (o.asama === "okuma_b") {
+    govde = `
+      <div class="kal-okuma">
+        <label>A okumasi</label>
+        <input type="number" id="kalA" class="alan dar" step="0.001" value="0">
+        <label>B okumasi</label>
+        <input type="number" id="kalB" class="alan dar" step="0.001"
+               inputmode="decimal" autofocus>
+        <button class="dugme" id="kalOlcumKaydet">Olcumu kaydet</button>
+      </div>
+      <p class="ipucu">Kumpasi sifirladiysaniz A=0 birakin, yalnizca B'yi
+        girin. Beklenen deger yaklasik
+        <b>${o.tur === "bosluk" ? "0" : o.komut_mm} mm</b>.</p>`;
+  } else if (o.asama === "tekrar") {
+    govde = `
+      <button class="dugme genis" data-kadim="geri">
+        Basa don ve tekrarla</button>
+      <button class="dugme hayalet" id="kalBitir">Bitir ve sonuca gec</button>`;
+  } else if (o.asama === "bitti") {
+    govde = `<div class="kal-bitti">✓ Olcum tamamlandi — sagdaki degerleri
+      Mach3'e girin.</div>`;
+  }
+
+  kap.innerHTML = `
+    <div class="kal-asama">
+      <span class="kal-rozet">${kacir(o.eksen)} · ${kacir(o.tur)}</span>
+      <span class="kal-sayac">${o.alinan}/${o.tekrar} olcum</span>
+    </div>
+    <div class="kal-yonerge">${kacir(o.yonerge)}</div>
+    ${hata}
+    <div class="kal-dugmeler">${govde}</div>
+    ${olcumler ? `<div class="kal-olcumler">${olcumler}</div>` : ""}`;
+
+  $$("#kalAkis [data-kadim]").forEach(b => b.onclick = () =>
+    calis(() => api("/api/kalibrasyon",
+                    { islem: "adim", adim: b.dataset.kadim })));
+  const kb = $("#kalBitir");
+  if (kb) kb.onclick = () =>
+    calis(() => api("/api/kalibrasyon", { islem: "bitir" }));
+  const ok = $("#kalOlcumKaydet");
+  if (ok) {
+    ok.onclick = kalOlcumGonder;
+    $("#kalB").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); kalOlcumGonder(); }
+      e.stopPropagation();
+    });
+    setTimeout(() => { const el = $("#kalB"); if (el) el.focus(); }, 30);
+  }
+}
+
+async function kalOlcumGonder() {
+  const a = parseFloat($("#kalA").value);
+  const b = parseFloat($("#kalB").value);
+  if (!isFinite(b)) { bildir("B okumasini girin", "hata"); return; }
+  await calis(() => api("/api/kalibrasyon", {
+    islem: "olcum", a: isFinite(a) ? a : 0, b }));
+}
+
+function kalSonucCiz(s) {
+  const el = $("#kalSonuc");
+  if (!s) { el.textContent = "Henuz olcum yapilmadi."; return; }
+  const sat = (a, b, sinif = "") =>
+    `<div class="ro-satir"><span>${a}</span><b class="${sinif}">${b}</b></div>`;
+  let ic = `<div class="ro-baslik">${kacir(s.eksen)} ekseni ·
+    ${kacir(s.tur)}</div><div class="ro-izgara">`;
+  if (s.tur === "bosluk") {
+    ic += sat("Olculen bosluk", s.bosluk_mm.toFixed(4) + " mm",
+              s.bosluk_mm > 0.1 ? "kotu" : "");
+  } else {
+    ic += sat("Komut", s.komut_mm + " mm") +
+      sat("Olculen (ort.)", s.olculen_ort.toFixed(4) + " mm") +
+      sat("Sapma", (s.hata_mm > 0 ? "+" : "") + s.hata_mm.toFixed(4) + " mm",
+          s.gecti ? "iyi" : "kotu") +
+      sat("Metrede sapma", (s.hata_m_basina_mm > 0 ? "+" : "") +
+          s.hata_m_basina_mm.toFixed(2) + " mm/m") +
+      sat("Duzeltme carpani", s.carpan.toFixed(6)) +
+      sat("Tolerans", "±" + s.tolerans_mm.toFixed(3) + " mm");
+    if (s.tur === "olcek") {
+      ic += sat("Mevcut adim/mm", s.eski_adim_basi == null
+                ? "girilmedi" : s.eski_adim_basi) +
+        sat("YENI adim/mm", s.yeni_adim_basi == null
+            ? "hesaplanamadi" : s.yeni_adim_basi, "vurgu-yazi");
+    }
+  }
+  ic += sat("Olcum sayisi", s.olcum_sayisi) +
+    sat("Yayilim", s.yayilim_mm.toFixed(4) + " mm",
+        s.guvenilir ? "" : "kotu") + `</div>`;
+  ic += `<div class="ipucu">Olcumler: ${s.olcumler
+    .map(v => v.toFixed(3)).join(" · ")} mm</div>`;
+  if ((s.uyarilar || []).length)
+    ic += `<ul class="kal-uyari">${s.uyarilar
+      .map(u => `<li>${kacir(u)}</li>`).join("")}</ul>`;
+  el.innerHTML = ic;
+}
+
+function kalTalimatCiz(s, k) {
+  const el = $("#kalTalimat");
+  const uyg = $("#kalUygula"), elle = $("#kalElleSatir");
+  if (!s || !(s.talimat || []).length) {
+    el.innerHTML = `Olcum bitince Mach3'te acilacak pencere, kutu adi ve
+      yazilacak sayi burada gorunur.`;
+    uyg.classList.add("gizli");
+    elle.classList.add("gizli");
+    return;
+  }
+  el.innerHTML = s.talimat.map(t => `
+    <div class="kal-t">
+      <div class="kal-t-bas">${kacir(t.pencere)}
+        <span class="kal-t-yer">${kacir(t.yer)}</span></div>
+      ${t.alanlar.map(a => `
+        <div class="kal-t-alan">
+          <span class="kal-t-ad">${kacir(a.ad)}</span>
+          ${a.eski == null ? "" : `<span class="kal-t-eski">${a.eski}</span>
+            <span class="kal-t-ok">→</span>`}
+          <span class="kal-t-yeni">${kacir(a.yeni)}</span>
+        </div>`).join("")}
+      <ul class="kal-t-not">${t.notlar
+        .map(n => `<li>${kacir(n)}</li>`).join("")}</ul>
+    </div>`).join("");
+
+  const elleGerek = s.tur === "olcek" && s.yeni_adim_basi == null;
+  uyg.classList.toggle("gizli", s.tur === "dogrulama");
+  elle.classList.toggle("gizli", !elleGerek);
+  if (elleGerek && k && k.ayar) {
+    const mevcut = (k.ayar.adim_basi || {})[s.eksen];
+    if (mevcut != null && !$("#kalElleDeger").value)
+      $("#kalElleDeger").value = (mevcut * s.carpan).toFixed(4);
+  }
+}
+
+$("#kalKopyala").onclick = async () => {
+  const k = S.kal;
+  const s = (k && (k.son_sonuc || (k.oturum && k.oturum.sonuc))) || null;
+  const metin = s && s.talimat_metni;
+  if (!metin) { bildir("Kopyalanacak talimat yok", "uyari"); return; }
+  try {
+    await navigator.clipboard.writeText(metin);
+    bildir("Talimat panoya kopyalandi", "ok");
+  } catch {
+    // HTTPS olmayan adreste clipboard API kapali olabilir
+    const a = document.createElement("textarea");
+    a.value = metin; document.body.append(a); a.select();
+    try { document.execCommand("copy"); bildir("Kopyalandi", "ok"); }
+    catch { bildir("Kopyalanamadi; metni elle secin", "uyari"); }
+    a.remove();
+  }
+};
+
+function kalKayitliCiz(k) {
+  const ab = (k.ayar && k.ayar.adim_basi) || {};
+  const bo = (k.ayar && k.ayar.bosluk) || {};
+  const imza = JSON.stringify([ab, bo, (k.gecmis || []).length]);
+  if (imza === KAL.kayitImza) return;
+  KAL.kayitImza = imza;
+  $("#kalKayitli").innerHTML =
+    `<tr><th>Eksen</th><th>Steps per (adim/mm)</th><th>Bosluk (mm)</th></tr>` +
+    EKSEN3.map(e => `<tr><td><b>${e}</b></td>
+      <td>${ab[e] == null ? "–" : ab[e]}</td>
+      <td>${bo[e] == null ? "–" : bo[e]}</td></tr>`).join("");
+  const g = (k.gecmis || []).slice().reverse();
+  $("#kalGecmis").innerHTML = g.length ? g.map(x => `
+    <div class="kal-g">
+      <span>${new Date(x.zaman * 1000).toLocaleString("tr-TR")}</span>
+      <span class="tur">${kacir(x.eksen)} ${kacir(x.tur)}</span>
+      <span>${x.eski == null ? "" : x.eski + " → "}${
+        x.yeni == null ? "–" : x.yeni}</span>
+      <span>${x.hata_mm == null ? "" :
+        (x.hata_mm > 0 ? "+" : "") + x.hata_mm + " mm"}</span>
+    </div>`).join("") : `<span class="ipucu-kucuk">Henuz uygulanmis
+      kalibrasyon yok.</span>`;
+}
+
+/* ---- dugmeler ---- */
+$("#kalBasla").onclick = async () => {
+  const r = await calis(() => api("/api/kalibrasyon", {
+    islem: "basla", eksen: KAL.eksen, tur: KAL.tur, yon: KAL.yon,
+    mesafe: parseFloat($("#kalMesafe").value),
+    feed: parseFloat($("#kalFeed").value),
+    on_yaklasma: parseFloat($("#kalYaklasma").value),
+    tekrar: parseInt($("#kalTekrar").value, 10),
+  }), `Kalibrasyon oturumu acildi: ${KAL.eksen} / ${KAL.tur}`);
+  if (r) KAL.imza = "";
+};
+
+$("#kalIptal").onclick = async () => {
+  await calis(() => api("/api/kalibrasyon", { islem: "iptal" }),
+              "Oturum kapatildi");
+  KAL.imza = "";
+};
+
+$("#kalAyarKaydet").onclick = async () => {
+  const sayi = (id) => {
+    const v = $(id).value.trim();
+    return v === "" ? null : parseFloat(v);
+  };
+  const adim_basi = {}, bosluk = {};
+  EKSEN3.forEach(e => { adim_basi[e] = sayi("#kalAB" + e);
+                        bosluk[e] = sayi("#kalBO" + e); });
+  await calis(() => api("/api/kalibrasyon", { islem: "ayar", yama: {
+    adim_basi, bosluk,
+    olcum_mesafe: parseFloat($("#kalMesafe").value),
+    olcum_feed: parseFloat($("#kalFeed").value),
+    on_yaklasma: parseFloat($("#kalYaklasma").value),
+    tekrar: parseInt($("#kalTekrar").value, 10),
+    kumpas_cozunurluk: parseFloat($("#kalCozunurluk").value),
+  } }), "Kalibrasyon ayarlari kaydedildi");
+  KAL.kayitImza = "";
+};
+
+$("#kalUygula").onclick = async () => {
+  const k = S.kal;
+  const s = (k && (k.son_sonuc || (k.oturum && k.oturum.sonuc))) || null;
+  if (!s) { bildir("Uygulanacak sonuc yok", "uyari"); return; }
+  const elle = parseFloat($("#kalElleDeger").value);
+  const deger = isFinite(elle) ? elle : null;
+  if (!confirm("Degeri Mach3'e GERCEKTEN yazdiniz mi?\n\n" +
+               "• Motor Tuning'de <SAVE AXIS SETTINGS> dugmesine bastiniz mi?\n" +
+               "• Bu kayit yalnizca gecmis icindir; makineyi Mach3'e " +
+               "yazdiginiz deger kalibre eder.")) return;
+  const r = await calis(() => api("/api/kalibrasyon",
+                                  { islem: "uygula", deger }),
+                        "Kalibrasyon kaydedildi");
+  if (r) {
+    KAL.imza = ""; KAL.kayitImza = "";
+    $("#kalElleDeger").value = "";
+    if ((r.uyarilar || []).length) bildir("Dikkat", "uyari", r.uyarilar);
+  }
+};
+
+/* ================================================================== */
 /* Is raporu                                                           */
 /* ================================================================== */
 async function raporCiz() {
@@ -1304,6 +1837,17 @@ async function ayarlariYukle() {
   $("#gKalp").value = a.guvenlik.jog_kalp_atisi_ms;
   $("#gGuvenliZZorunlu").checked = !!a.guvenlik.guvenli_z_zorunlu;
 
+  // surekli jog hissiyati (Kontrol sayfasindaki hiz kutulari da buradan)
+  $("#gJogYavas").value = a.guvenlik.jog_yavas_feed;
+  $("#gJogHizli").value = a.guvenlik.jog_hizli_feed;
+  $("#gJogTik").value = a.guvenlik.jog_tik_ms;
+  $("#gJogOrtusme").value = a.guvenlik.jog_ortusme;
+  $("#gJogDurdur").checked = a.guvenlik.jog_birakinca_durdur !== false;
+  if (document.activeElement !== $("#jogYavas"))
+    $("#jogYavas").value = a.guvenlik.jog_yavas_feed;
+  if (document.activeElement !== $("#jogHizli"))
+    $("#jogHizli").value = a.guvenlik.jog_hizli_feed;
+
   // tezgah tabani
   $("#gTaban").value = a.guvenlik.makine_z_taban == null
     ? "" : a.guvenlik.makine_z_taban;
@@ -1372,6 +1916,11 @@ $("#guvenlikKaydet").onclick = () => {
     max_surekli_jog_sn: parseFloat($("#gJogSure").value),
     jog_kalp_atisi_ms: parseFloat($("#gKalp").value),
     guvenli_z_zorunlu: $("#gGuvenliZZorunlu").checked,
+    jog_yavas_feed: parseFloat($("#gJogYavas").value) || 600,
+    jog_hizli_feed: parseFloat($("#gJogHizli").value) || 4000,
+    jog_tik_ms: Math.max(parseFloat($("#gJogTik").value) || 80, 20),
+    jog_ortusme: Math.max(parseFloat($("#gJogOrtusme").value) || 1.35, 1),
+    jog_birakinca_durdur: $("#gJogDurdur").checked,
   } } }), "Guvenlik ayarlari kaydedildi");
 };
 
