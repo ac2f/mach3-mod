@@ -27,7 +27,9 @@ Bu, evinizdeki agda makul bir korumadir; sunucuyu **internete acmayin**.
 import json
 import math
 import os
+import ipaddress
 import secrets
+import socket
 import threading
 import time
 import traceback
@@ -75,7 +77,67 @@ def _json_govde(sonuc):
 
 
 def _yerel_mi(ip):
-    return ip in ("127.0.0.1", "::1", "localhost")
+    return ip in ("127.0.0.1", "::1", "localhost") or str(ip).startswith(
+        "::ffff:127.")
+
+
+MAKS_GOVDE = 1 << 20            # 1 MB: sinirsiz govde bellegi doldurur
+
+
+def _host_gecerli(host_basligi):
+    """Host basligi bir IP, 'localhost' ya da bu makinenin adi mi?
+
+    DNS REBINDING korumasi: kotu niyetli bir site kendi alan adini
+    127.0.0.1'e cozdurup tarayicinin 'ayni kaynak' sanmasini saglayabilir;
+    bu durumda Host basligi o alan adidir ve burada reddedilir.
+    """
+    if not host_basligi:
+        return False
+    h = host_basligi.strip()
+    if h.startswith("["):                      # [::1]:8010
+        h = h[1:].split("]", 1)[0]
+    elif h.count(":") == 1:                    # ad:port
+        h = h.rsplit(":", 1)[0]
+    h = h.lower().rstrip(".")
+    if not h:
+        return False
+    if h == "localhost" or h.endswith(".local"):
+        return True
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        pass
+    try:
+        return h == socket.gethostname().lower()
+    except OSError:
+        return False
+
+
+def _kaynak_gecerli(basliklar, post):
+    """Istegin tarayicida baska bir sitenin sayfasindan gelmedigini dogrular.
+
+    Yerel makineden gelen istekler PIN'siz kabul edilir; bu yuzden herhangi
+    bir web sitesinin tarayiciniza `fetch('http://127.0.0.1:8010/api/...')`
+    yaptirip CNC'yi oynatabilmesi (CSRF) engellenmelidir.
+    """
+    if not _host_gecerli(basliklar.get("Host", "")):
+        return False, "Gecersiz Host basligi"
+    origin = basliklar.get("Origin")
+    if origin is not None:
+        netloc = urllib.parse.urlparse(origin).netloc
+        if origin == "null" or netloc.lower() != basliklar.get(
+                "Host", "").lower():
+            return False, "Farkli kaynaktan gelen istek reddedildi"
+    if basliklar.get("Sec-Fetch-Site") == "cross-site":
+        return False, "Siteler arasi istek reddedildi"
+    if post:
+        # application/json 'basit istek' degildir: baska bir siteden
+        # gonderilirse tarayici once izin sorar (ve biz izin vermeyiz).
+        tur = (basliklar.get("Content-Type") or "").split(";")[0].strip().lower()
+        if tur != "application/json":
+            return False, "Content-Type application/json olmali"
+    return True, ""
 
 
 def _yetki(veri, ip):
@@ -190,6 +252,29 @@ def api_jog_basla(veri, ip):
                                  _istemci(veri))
 
 
+def api_jog_durum(veri, ip):
+    return DENETLEYICI.jog.durum()
+
+
+def api_jog_ayar(veri, ip):
+    """Jog ON/OFF, kip, Slow Jog %, Step, surucu (Mach3'teki dugmeler)."""
+    _yetki(veri, ip)
+    v = dict(veri or {})
+    ad = v.get("islem")
+    if ad == "adim_sonraki":
+        return DENETLEYICI.jog.adim_sonraki(int(v.get("yon", 1)))
+    kw = {k: v.get(k) for k in ("acik", "mod", "yavas_yuzde", "hizli_yuzde",
+                                "adim", "adim_listesi", "surucu",
+                                "adim_kuyrugu") if k in v}
+    return DENETLEYICI.jog_ayarla(_istemci(veri), **kw)
+
+
+def api_jog_dogrula(veri, ip):
+    _yetki(veri, ip)
+    return DENETLEYICI.jog_dogrula(
+        (veri or {}).get("eksenler") or ("X", "Y", "Z"), _istemci(veri))
+
+
 def api_jog_hiz(veri, ip):
     """Tus basiliyken Shift'e basmak: jogu kesmeden beslemeyi degistirir."""
     _yetki(veri, ip)
@@ -204,6 +289,32 @@ def api_jog_kalp(veri, ip):
 
 def api_jog_bitir(veri, ip):
     return {"ok": DENETLEYICI.jog_bitir(_istemci(veri))}
+
+
+def api_makine(veri, ip):
+    """Mach3 ekranindaki dugmeler: Reset, Rewind, Single Block, mil, sogutma."""
+    _yetki(veri, ip)
+    v = veri or {}
+    ad = v.get("ad")
+    ist = _istemci(veri)
+    if ad == "reset":
+        return DENETLEYICI.reset_dugmesi(ist)
+    if ad == "rewind":
+        return {"ok": DENETLEYICI.rewind(ist)}
+    if ad == "tek_blok":
+        return {"ok": DENETLEYICI.tek_blok(ist)}
+    if ad in ("mil_cw", "mil_ccw", "mil_dur"):
+        return DENETLEYICI.mil(ad.split("_", 1)[1], v.get("devir"), ist)
+    if ad in ("sogutma_sel", "sogutma_sis", "sogutma_kapat"):
+        return DENETLEYICI.sogutma(ad.split("_", 1)[1], ist)
+    return {"hata": f"Bilinmeyen makine komutu: {ad}"}
+
+
+def api_program_satirlar(veri, ip):
+    """Mach3'e yuklu dosyanin satirlari (G-Code penceresi icin)."""
+    v = veri or {}
+    return DENETLEYICI.program_satirlari(int(v.get("bas", 0)),
+                                         int(v.get("adet", 3000)))
 
 
 def api_git(veri, ip):
@@ -264,7 +375,41 @@ def api_fro(veri, ip):
                                   (veri or {}).get("delta"), _istemci(veri))
 
 
-# -- is sifiri profilleri ------------------------------------------------
+# -- Home noktalari (adlandirilmis is sifirlari) -------------------------
+def api_home_liste(veri, ip):
+    return DENETLEYICI.homeler()
+
+
+def api_home_kaydet(veri, ip):
+    _yetki(veri, ip)
+    v = veri or {}
+    return DENETLEYICI.home_kaydet(
+        v.get("ad", ""), v.get("tezgah"), v.get("eksenler"),
+        v.get("takim_boyu"), v.get("malzeme"), v.get("not"),
+        v.get("guvenli_z"), bool(v.get("uzerine_yaz")), _istemci(veri))
+
+
+def api_home_duzenle(veri, ip):
+    _yetki(veri, ip)
+    v = veri or {}
+    alanlar = {k: v[k] for k in ("yeni_ad", "tezgah", "malzeme", "not",
+                                 "takim_boyu", "guvenli_z") if k in v}
+    return DENETLEYICI.home_duzenle(v.get("ad", ""), _istemci(veri), **alanlar)
+
+
+def api_home_uygula(veri, ip):
+    _yetki(veri, ip)
+    v = veri or {}
+    return DENETLEYICI.home_uygula(v.get("ad", ""), v.get("eksenler"),
+                                   bool(v.get("git")), _istemci(veri))
+
+
+def api_home_sil(veri, ip):
+    _yetki(veri, ip)
+    return DENETLEYICI.home_sil((veri or {}).get("ad", ""), _istemci(veri))
+
+
+# -- eski ad: is sifiri profilleri (Home'a yonlendirilir) ------------------
 def api_profil_liste(veri, ip):
     return DENETLEYICI.profiller()
 
@@ -381,6 +526,7 @@ def api_sure(veri, ip):
     """Dosyaya dokunmadan sure tahmini (yuklu program veya verilen yol)."""
     yol = (veri or {}).get("yol")
     if yol:
+        _yetki(veri, ip)                 # rastgele dosya okutmaz
         p = GC.Program(yol)
     elif DENETLEYICI.program:
         p = DENETLEYICI.program
@@ -461,9 +607,30 @@ def api_gozat(veri, ip):
 
 
 # -- ayarlar / kodlar / gunluk ------------------------------------------
+# Uzaktan (telefon) degistirilmemesi gereken ayarlar: bir PIN'li istemci
+# `mach3_exe`yi baska bir programa cevirip /api/baglan ile onu CALISTIRABILIRDI.
+_YEREL_AYARLAR = {"baglanti": {"mach3_exe", "progid", "yedek_progid",
+                               "mach3_baslat", "profil"},
+                  "web": None, "oem_ezme": None}
+
+
+def _yerel_ayar_denetle(yama, ip):
+    if _yerel_mi(ip):
+        return
+    for bolum, anahtarlar in _YEREL_AYARLAR.items():
+        if bolum not in (yama or {}):
+            continue
+        if anahtarlar is None or any(
+                k in anahtarlar for k in (yama[bolum] or {})):
+            raise GUV.GuvenlikHatasi(
+                f"'{bolum}' ayarlari yalnizca makinenin kendi bilgisayarindan "
+                "degistirilebilir")
+
+
 def api_ayarlar(veri, ip):
     if (veri or {}).get("yama"):
         _yetki(veri, ip)
+        _yerel_ayar_denetle(veri["yama"], ip)
         AYARLAR.guncelle(veri["yama"])
         DENETLEYICI.ayarlar_yenile()
         DENETLEYICI.gunluk.ekle("ayar", "Ayarlar guncellendi",
@@ -494,6 +661,11 @@ API = {
     "/api/devam": api_devam,
     "/api/durdur": api_durdur,
     "/api/jog/adim": api_jog_adim,
+    "/api/jog/durum": api_jog_durum,
+    "/api/jog/ayar": api_jog_ayar,
+    "/api/jog/dogrula": api_jog_dogrula,
+    "/api/makine": api_makine,
+    "/api/program/satirlar": api_program_satirlar,
     "/api/jog/basla": api_jog_basla,
     "/api/jog/hiz": api_jog_hiz,
     "/api/jog/kalp": api_jog_kalp,
@@ -505,6 +677,11 @@ API = {
     "/api/sifira_git": api_sifira_git,
     "/api/referans": api_referans,
     "/api/fro": api_fro,
+    "/api/home/liste": api_home_liste,
+    "/api/home/kaydet": api_home_kaydet,
+    "/api/home/duzenle": api_home_duzenle,
+    "/api/home/uygula": api_home_uygula,
+    "/api/home/sil": api_home_sil,
     "/api/profil/liste": api_profil_liste,
     "/api/profil/kaydet": api_profil_kaydet,
     "/api/profil/uygula": api_profil_uygula,
@@ -525,7 +702,7 @@ API = {
     "/api/gunluk": api_gunluk,
 }
 
-SURUM = "1.0.0"
+SURUM = "2.0.0"
 
 
 # ----------------------------------------------------------------------
@@ -564,8 +741,17 @@ class Isleyici(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _kaynak_denetle(self, post):
+        ok, neden = _kaynak_gecerli(self.headers, post)
+        if not ok:
+            self._gonder(403 if "Content-Type" not in neden else 415,
+                         json.dumps({"hata": neden}))
+        return ok
+
     # -- GET -------------------------------------------------------------
     def do_GET(self):
+        if not self._kaynak_denetle(False):
+            return
         yol = self.path.split("?", 1)[0]
         if yol == "/favicon.ico":
             self.send_response(204)
@@ -582,10 +768,15 @@ class Isleyici(BaseHTTPRequestHandler):
         if yol == "/":
             yol = "/index.html"
         dosya = os.path.abspath(os.path.join(WEB_DIZIN, yol.lstrip("/")))
-        if dosya.startswith(WEB_DIZIN) and os.path.isfile(dosya):
+        try:
+            icinde = os.path.commonpath([dosya, WEB_DIZIN]) == WEB_DIZIN
+        except ValueError:                       # farkli surucu
+            icinde = False
+        if icinde and os.path.isfile(dosya):
             tur = ("text/html; charset=utf-8" if dosya.endswith(".html")
                    else "text/javascript; charset=utf-8" if dosya.endswith(".js")
                    else "text/css; charset=utf-8" if dosya.endswith(".css")
+                   else "image/svg+xml" if dosya.endswith(".svg")
                    else "application/octet-stream")
             with open(dosya, "rb") as f:
                 self._gonder(200, f.read(), tur)
@@ -656,6 +847,8 @@ class Isleyici(BaseHTTPRequestHandler):
 
     # -- POST ------------------------------------------------------------
     def do_POST(self):
+        if not self._kaynak_denetle(True):
+            return
         yol = self.path.split("?", 1)[0]
         fn = API.get(yol)
         if not fn:
@@ -663,6 +856,9 @@ class Isleyici(BaseHTTPRequestHandler):
             return
         try:
             uzunluk = int(self.headers.get("Content-Length", 0))
+            if uzunluk < 0 or uzunluk > MAKS_GOVDE:
+                self._gonder(413, json.dumps({"hata": "Istek cok buyuk"}))
+                return
             veri = json.loads(self.rfile.read(uzunluk) or b"{}")
             sonuc = fn(veri, self.istemci_ip)
             govde = _json_govde(sonuc if sonuc is not None else {"ok": True})

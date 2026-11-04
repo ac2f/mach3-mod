@@ -21,6 +21,7 @@ from . import gcode as GC
 from . import guvenlik as GUV
 from . import kalibrasyon as KAL
 from . import izleyici as IZL
+from . import jog as JOG
 from . import is_takip as IST
 from . import kodlar as KOD
 from . import klavye_kilidi as KK
@@ -48,22 +49,25 @@ class Denetleyici:
         self.referans = {e: None for e in EKSENLER}
         self.referans_zaman = None
         self._ek = {"feed": None, "fro": None, "devir": None,
-                    "hareket": None, "estop": None}
+                    "hareket": None, "estop": None, "satir": None,
+                    "gecen": None, "kuyruk": None, "yavas_jog": None}
         self._son_yoklama = 0.0
         self._yokla_dur = threading.Event()
         self._yokla_is = None
         self._kmt_kilit = threading.RLock()
 
-        # jog durumu
-        self._jog_dur = threading.Event()
-        self._jog_is = None
-        # Suren jogun beslemesi; Shift'e basip birakmak bunu canli degistirir
-        self._jog_feed = 600.0
-        self.jog_bilgi = {"aktif": False, "eksen": None, "yon": 0}
+        # Mach3'un LED durumlari (son yoklama) ve G-code birimi
+        self._led = {}
+        self._birim = None                 # "mm" | "inch" | None (bilinmiyor)
+        self._hata_say = 0                 # ardisik yoklama hatasi
+        self._run_goruldu = False
+
+        # jog: Mach3 modelini (kip, Slow Jog %, Step) uygulayan motor
         self.bekci = GUV.KalpAtisiBekcisi(
             self._bekci_durdur,
             zaman_asimi_ms=ayarlar["guvenlik"].get("jog_kalp_atisi_ms", 400),
             en_fazla_sn=ayarlar["guvenlik"].get("max_surekli_jog_sn", 30.0))
+        self.jog = JOG.JogMotoru(self)
 
         # klavye kilidi + odak bekcisi
         kl = ayarlar["klavye"]
@@ -73,7 +77,7 @@ class Denetleyici:
             panik=lambda: self.acil_durdur("klavye ESC"))
         self.odak = KK.OdakBekcisi(
             baslik_parcasi=kl.get("odak_pencere_baslik", "Mach3"),
-            durdur=lambda sebep: self.acil_durdur(sebep),
+            durdur=lambda sebep: self.durdur_yumusak(sebep),
             hareket_sorgu=lambda: self._ek.get("hareket"),
             geri_al=bool(kl.get("odak_geri_al", True)))
 
@@ -135,6 +139,8 @@ class Denetleyici:
             self.baglanti = BAG.baglanti_olustur(self.ayarlar)
             self.baglanti.ac()
             self.baglanma_hatasi = ""
+            self._hata_say = 0
+            self._kurulum_kodlari()
             self.gunluk.ekle("baglanti",
                              f"Baglanti kuruldu ({self.baglanti.tur})")
         except Exception as e:                        # noqa: BLE001
@@ -200,47 +206,169 @@ class Denetleyici:
                 continue
             try:
                 self._oku()
+                self._hata_say = 0
             except Exception as e:                    # noqa: BLE001
-                self.baglanma_hatasi = str(e)
-                if self.baglanti:
-                    self.baglanti.bagli = False
-                self.gunluk.ekle("hata", f"Yoklama basarisiz: {e}")
+                # Tek bir COM aksamasi (ornegin Mach3 bir an mesgul) baglantiyi
+                # KALICI koparmamali; ardisik hatalar sayilir.
+                self._hata_say += 1
+                self.gunluk.ekle("hata", f"Yoklama basarisiz "
+                                         f"({self._hata_say}/3): {e}")
+                if self._hata_say >= 3:
+                    self.baglanma_hatasi = str(e)
+                    if self.baglanti:
+                        self.baglanti.bagli = False
+                    self.jog.durdur("baglanti koptu")
 
-    def _oku(self):
+    # Yoklamada okunan LED'ler (kodlar.led anahtarlari)
+    _LED_ADLARI = ("estop", "inch", "metrik", "bosta", "calisiyor",
+                   "duraklatildi", "makine_koord", "cv", "jog_adim",
+                   "jog_surekli", "yumusak_limit", "limit_gecersiz")
+    _DRO_EK = ("feed", "fro", "devir", "satir", "gecen", "kuyruk",
+               "yavas_jog")
+
+    def _kurulum_kodlari(self):
+        """Mach3 kurulum klasorundeki Buttons/DROs/Leds.txt ile OEM kodlarini
+        karsilastirir (farkli surumde kodlar kendiliginden uyarlanir)."""
+        try:
+            exe = BAG.mach3_exe_bul(self.ayarlar["baglanti"])
+        except Exception:                             # noqa: BLE001
+            exe = ""
+        if not exe or self.baglanti is None or self.baglanti.tur != "com":
+            return
+        rapor = self.kodlar.kurulumdan_oku(os.path.dirname(exe))
+        self.kodlar.uygula(self.ayarlar.get("oem_ezme"))
+        if rapor["farklar"]:
+            self.gunluk.ekle(
+                "uyari", f"Mach3 OEM listeleri gomulu listeden farkli "
+                         f"({len(rapor['farklar'])} girdi); kodlar kurulumdan "
+                         "alindi")
+
+    def _oku(self, tam=True):
+        """Mach3'u TEK turda okur. tam=False: jog dongusu icin hafif okuma."""
         b = self.baglanti
+        K = self.kodlar
+        eksenler = list(self.ayarlar["makine"].get("eksenler", ["X", "Y", "Z"]))
+        adlar = {}                               # ad -> kod
+        for e in eksenler:
+            adlar[f"i_{e}"] = K.eksen_dro(e)
+            adlar[f"m_{e}"] = K.eksen_dro(e, makine=True)
+            if tam:
+                adlar[f"o_{e}"] = K.eksen_ofset_dro(e)
+        if tam:
+            for ad in self._DRO_EK:
+                adlar[ad] = K.dro.get(ad)
+        dro_kodlari = sorted({k for k in adlar.values() if k is not None})
+        led_adlari = ([a for a in self._LED_ADLARI if a in K.led]
+                      if tam else [])
+        led_kodlari = [K.led[a] for a in led_adlari]
+        f = getattr(b, "paket_oku", None)
+        if f is not None:
+            paket = f(dro_kodlari, led_kodlari)
+        else:                                     # sade/sahte baglantilar
+            paket = BAG.TemelBaglanti.paket_oku(b, dro_kodlari, led_kodlari)
+        dro = paket["dro"]
+        led = {a: paket["led"].get(K.led[a]) for a in led_adlari}
+        zorunlu = self.ayarlar["guvenlik"].get("referans_zorunlu", True)
         with self._kmt_kilit:
-            for e in self.ayarlar["makine"].get("eksenler", ["X", "Y", "Z"]):
-                kod = self.kodlar.eksen_dro(e)
-                if kod is not None:
-                    self._konum[e] = b.dro(kod)
-                mkod = self.kodlar.eksen_dro(e, makine=True)
-                if mkod is not None:
-                    self._makine[e] = b.dro(mkod)
+            makine_gosteriyor = bool(led.get("makine_koord"))
+            for e in eksenler:
+                i = dro.get(adlar.get(f"i_{e}"))
+                m = dro.get(adlar.get(f"m_{e}"))
+                of = dro.get(adlar.get(f"o_{e}")) if tam else None
+                if i is not None and makine_gosteriyor and m is not None \
+                        and of is not None:
+                    # DRO 800.. "Machine Coordinates" gostergesi acikken
+                    # MAKINE koordinati verir; is koordinati = makine - ofset
+                    i = m - of
+                if i is not None:
+                    self._konum[e] = i
+                if m is not None:
+                    self._makine[e] = m
                     r = self.referans.get(e)
                     if r is not None:
-                        self._tezgah[e] = self._makine[e] - r
-                    elif self.ayarlar["guvenlik"].get("referans_zorunlu",
-                                                      True):
+                        self._tezgah[e] = m - r
+                    elif zorunlu:
                         # Referans yok ve zorunlu: tezgah koordinati
                         # BILINMIYOR. 0 varsaymak yanlis guven verir;
                         # None birakilir, guvenlik katmani reddeder.
                         self._tezgah[e] = None
                     else:
                         # Operator "uyar ama izin ver" dedi: eski
-                        # (KORUMASIZ) davranis - ham makine okumasi
-                        # kullanilir. Limitler bu halde tezgahin neresini
-                        # gosterdigini bilemez.
-                        self._tezgah[e] = self._makine[e]
-            self._ek["feed"] = b.dro(self.kodlar.dro["feed"])
-            self._ek["fro"] = b.dro(self.kodlar.dro["fro"])
-            self._ek["devir"] = b.dro(self.kodlar.dro["gercek_rpm"])
-            self._ek["hareket"] = b.hareket_ediyor()
-            self._ek["estop"] = b.estop()
+                        # (KORUMASIZ) davranis - ham makine okumasi.
+                        self._tezgah[e] = m
+            if tam:
+                for ad in self._DRO_EK:
+                    self._ek[ad] = dro.get(adlar.get(ad))
+                self._led = led
+                if led.get("metrik"):
+                    self._birim = "mm"
+                elif led.get("inch"):
+                    self._birim = "inch"
+                else:
+                    self._birim = None
+            self._ek["hareket"] = paket.get("hareket")
+            estop = paket.get("estop")
+            if estop is None and tam:
+                estop = led.get("estop")
+            self._ek["estop"] = estop
         self._son_yoklama = time.time()
-        if self.takip.aktif:
+        if tam and self.takip.aktif:
             self.takip.guncelle(dict(self._konum), self._ek.get("hareket"),
                                 self._ek.get("fro"))
             self._bitis_yokla()
+
+    def oku_simdi(self):
+        """Jog dongusu icin: taze konum anlik goruntusu (hafif okuma)."""
+        self._oku(tam=False)
+        with self._kmt_kilit:
+            return {"konum": dict(self._konum), "tezgah": dict(self._tezgah),
+                    "makine": dict(self._makine),
+                    "hareket": self._ek.get("hareket"),
+                    "estop": self._ek.get("estop")}
+
+    def led_degeri(self, ad):
+        """Son yoklamadaki LED durumu (bilinmiyorsa None)."""
+        return self._led.get(ad)
+
+    # ------------------------------------------------------------------
+    # Hareket oncesi ortak kontrol: Reset, referans, BIRIM
+    # ------------------------------------------------------------------
+    def hareket_hazirla(self, eksenler=()):
+        """Her hareket komutundan once: Reset'te degil miyiz, referans var mi,
+        Mach3 mm kipinde mi? (Program mm'de calisir.)"""
+        self._gerekli()
+        self._oku(tam=True)
+        if self._ek.get("estop"):
+            raise GUV.GuvenlikHatasi(
+                "Mach3 RESET (E-Stop) durumunda; hareket yok. Once Mach3'te "
+                "(ya da buradaki Reset dugmesiyle) Reset'i kaldirin.")
+        if eksenler:
+            self._referans_gerekli(eksenler)
+        self.birim_garanti()
+
+    def birim_garanti(self):
+        """Mach3 G20 (inc) kipindaysa G21'e gecirir; gecmezse hareketi REDDEDER.
+
+        Neden: uygulama her sayiyi mm sanir. Mach3 inc kipindayken 'G1 X10'
+        10 INC (254 mm) hareket ettirir ve yumusak limit denetimi bunu
+        goremez. Bu PC'deki Mach3 tam olarak boyle (Standard Meas.) aciliyor.
+        """
+        if not self.ayarlar["guvenlik"].get("birim_zorla_mm", True):
+            return
+        if self._birim in (None, "mm"):
+            return
+        b = self._gerekli()
+        self.gunluk.ekle("guvenlik", "Mach3 G20 (inc) kipinde; program mm'de "
+                                     "calisir, G21 gonderiliyor")
+        b.kod("G21")
+        for _ in range(20):
+            time.sleep(0.1)
+            self._oku(tam=True)
+            if self._birim == "mm":
+                return
+        raise GUV.GuvenlikHatasi(
+            "Mach3 inc (G20) kipinde ve G21'e gecmedi; hareket reddedildi. "
+            "Mach3'te MDI'a G21 yazip Enter'a basin.")
 
     def _bitis_yokla(self):
         """Program bitti mi? Mach3 bunu bildirmedigi icin hareketten anlariz.
@@ -251,13 +379,31 @@ class Denetleyici:
         if not self.calisiyor or self.takip.duraklatildi:
             self._bitis_bekle = 0
             return
-        if self._ek.get("hareket"):
-            self._bitis_bekle = 0
-            return
-        self._bitis_bekle += 1
         hz = max(float(self.ayarlar["baglanti"].get("yoklama_hz", 10)), 1.0)
-        if self._bitis_bekle < int(hz * 6):        # ~6 sn hareketsizlik
-            return
+        run = self._led.get("calisiyor")
+        if run is not None:
+            # Mach3'un "Run" LED'i: heuristik beklemeye gerek yok. LED'in
+            # yukselmesi icin kisa bir pay taninir.
+            if run:
+                self._run_goruldu = True
+                self._bitis_bekle = 0
+                return
+            gecen = time.time() - (self.son_calistirma or {}).get("zaman", 0)
+            if not self._run_goruldu and gecen < 3.0:
+                return
+            if self._ek.get("hareket"):
+                self._bitis_bekle = 0
+                return
+            self._bitis_bekle += 1
+            if self._bitis_bekle < max(int(hz * 0.5), 2):
+                return
+        else:
+            if self._ek.get("hareket"):
+                self._bitis_bekle = 0
+                return
+            self._bitis_bekle += 1
+            if self._bitis_bekle < int(hz * 6):    # ~6 sn hareketsizlik
+                return
         p = self.takip.ilerleme()
         sebep = ("tamamlandi" if p is None or p >= 0.97
                  else f"yarida kaldi (%{p * 100:.0f})")
@@ -521,7 +667,14 @@ class Denetleyici:
             "estop": self._ek.get("estop"),
             "yoklama_yasi": (round(time.time() - self._son_yoklama, 2)
                              if self._son_yoklama else None),
-            "jog": dict(self.jog_bilgi),
+            "jog": self.jog.durum(),
+            # Mach3'un LED'leri (Reset, Idle, Run, Pause, CV, jog kipi ...)
+            "led": dict(self._led),
+            "birim": self._birim,
+            "satir": self._ek.get("satir"),
+            "gecen_sn": self._ek.get("gecen"),
+            "kuyruk": self._ek.get("kuyruk"),
+            "yavas_jog": self._ek.get("yavas_jog"),
             "klavye": self.klavye.durum(),
             "odak": self.odak.durum(),
             "kilit": self.kilit.durum(),
@@ -551,21 +704,34 @@ class Denetleyici:
     # ==================================================================
     # Durdurma (her zaman calisir - kontrol kilidi aranmaz)
     # ==================================================================
-    def acil_durdur(self, sebep="operator"):
-        """Once jog'u kes, sonra Mach3'e feed hold + stop gonder."""
-        self._jog_dur.set()
-        self.bekci.bitir()
-        self.jog_bilgi = {"aktif": False, "eksen": None, "yon": 0}
+    def _acil_dugme(self):
+        b = self.baglanti
+        return getattr(b, "dugme_acil", b.dugme)
+
+    def durdur_yumusak(self, sebep="operator"):
+        """Jog'u kes + Feed Hold + Stop. Reset'e BASMAZ.
+
+        Kalp atisi kaybi, odak kaybi gibi 'normal' durdurmalar icindir: bir
+        tusu birakmak Mach3'u Reset'e sokmamali.
+        """
+        self.jog.durdur(sebep)
         sonuc = {"sebep": sebep, "adimlar": []}
         b = self.baglanti
         if not b or not b.bagli:
             sonuc["adimlar"].append("baglanti yok")
-            self.gunluk.ekle("acil", f"ACIL DURDUR ({sebep}) - baglanti yok")
+            self.gunluk.ekle("acil", f"DURDUR ({sebep}) - baglanti yok")
             return sonuc
-        for ad, islem in (
-                ("jog_durdur", lambda: b.jog_durdur()),
-                ("feed_hold", lambda: b.dugme(self.kodlar.buton["feed_hold"])),
-                ("stop", lambda: b.dugme(self.kodlar.buton["stop"]))):
+        acil = self._acil_dugme()
+        adimlar = []
+        a = self.jog._aktif
+        if a and a.get("surucu") == "mach3":
+            for no in range(3):
+                adimlar.append((f"jog_kapat{no}",
+                                lambda n=no: b.jog_kapat(n)))
+        adimlar += [
+            ("feed_hold", lambda: acil(self.kodlar.buton["feed_hold"])),
+            ("stop", lambda: acil(self.kodlar.buton["stop"]))]
+        for ad, islem in adimlar:
             try:
                 islem()
                 sonuc["adimlar"].append(ad)
@@ -574,32 +740,133 @@ class Denetleyici:
         if self.takip.aktif:
             self._program_bitti(f"acil durdur: {sebep}")
         self.calisiyor = False
+        return sonuc
+
+    def acil_durdur(self, sebep="operator"):
+        """ACIL DURDUR: jog + Feed Hold + Stop, sonra Mach3'un Reset'i.
+
+        Mach3'te Esc = Reset; Reset hareketi keser ve cikislari kapatir.
+        DIKKAT: Reset bir TERSLEME dugmesidir - zaten Reset'teyken basmak
+        Reset'i KALDIRIRDI. Bu yuzden yalnizca Mach3 Reset'te DEGILKEN ve
+        durum acikca biliniyorsa basilir.
+        """
+        sonuc = self.durdur_yumusak(sebep)
+        b = self.baglanti
+        if (b and b.bagli
+                and self.ayarlar["guvenlik"].get("acil_reset", True)):
+            try:
+                zaten = b.estop()
+            except Exception:                         # noqa: BLE001
+                zaten = None
+            if zaten is False:
+                try:
+                    self._acil_dugme()(self.kodlar.buton["reset"])
+                    sonuc["adimlar"].append("reset")
+                except Exception as e:                # noqa: BLE001
+                    sonuc["adimlar"].append(f"reset HATA: {e}")
+            elif zaten is True:
+                sonuc["adimlar"].append("reset (zaten Reset'te)")
         self.gunluk.ekle("acil", f"ACIL DURDUR ({sebep})", sonuc)
         return sonuc
 
     def feed_hold(self):
         b = self._gerekli()
-        b.dugme(self.kodlar.buton["feed_hold"])
+        self._acil_dugme()(self.kodlar.buton["feed_hold"])
         self.takip.duraklat("feed hold")
         self.gunluk.ekle("kontrol", "Feed hold")
         return True
 
     def devam(self):
         b = self._gerekli()
+        if self._ek.get("estop"):
+            raise GUV.GuvenlikHatasi(
+                "Mach3 RESET durumunda; Cycle Start calismaz. Once Reset'i "
+                "kaldirin.")
         b.dugme(self.kodlar.buton["cycle_start"])
         self.takip.devam_et("cycle start")
         self.gunluk.ekle("kontrol", "Devam (cycle start)")
         return True
 
     def durdur(self):
-        b = self._gerekli()
-        b.dugme(self.kodlar.buton["stop"])
+        self._gerekli()
+        self._acil_dugme()(self.kodlar.buton["stop"])
         self._program_bitti("operator durdurdu")
         self.gunluk.ekle("kontrol", "Durdur")
         return True
 
     def _bekci_durdur(self, sebep):
-        self.acil_durdur(f"bekci: {sebep}")
+        self.durdur_yumusak(f"bekci: {sebep}")
+
+    # ------------------------------------------------------------------
+    # Mach3 ekranindaki dugmeler
+    # ------------------------------------------------------------------
+    def reset_dugmesi(self, istemci=None):
+        """Mach3 'Reset' dugmesi (E-Stop'u acar/kapar)."""
+        self.kilit.dogrula(istemci)
+        b = self._gerekli()
+        b.dugme(self.kodlar.buton["reset"])
+        self.gunluk.ekle("kontrol", "Reset dugmesine basildi")
+        for _ in range(8):
+            time.sleep(0.1)
+            self._oku(tam=True)
+            if self._ek.get("estop") is not None:
+                break
+        return {"estop": self._ek.get("estop")}
+
+    def rewind(self, istemci=None):
+        self.kilit.dogrula(istemci)
+        b = self._gerekli()
+        if self.calisiyor:
+            raise GUV.GuvenlikHatasi("Program calisirken Rewind yapilamaz")
+        b.dugme(self.kodlar.buton["rewind"])
+        self.gunluk.ekle("kontrol", "Rewind")
+        return True
+
+    def tek_blok(self, istemci=None):
+        self.kilit.dogrula(istemci)
+        b = self._gerekli()
+        b.dugme(self.kodlar.buton["tek_blok"])
+        self.gunluk.ekle("kontrol", "Single Block degistirildi")
+        return True
+
+    def iletisim_komutu(self, satir):
+        """Yardimci: hareket gerektirmeyen (mil/sogutma) tek MDI satiri."""
+        self._gerekli()
+        if self._ek.get("estop"):
+            raise GUV.GuvenlikHatasi(
+                "Mach3 RESET durumunda; once Reset'i kaldirin.")
+        self._mdi(satir)
+
+    def mil(self, islem, devir=None, istemci=None):
+        """Mil: 'cw' | 'ccw' | 'dur' (+ istege bagli devir)."""
+        self.kilit.dogrula(istemci)
+        if self.calisiyor:
+            raise GUV.GuvenlikHatasi(
+                "Program calisirken mil elle degistirilemez")
+        if islem == "dur":
+            satir = "M5"
+        elif islem in ("cw", "ccw"):
+            satir = "M3" if islem == "cw" else "M4"
+            if devir is not None:
+                devir = float(devir)
+                if not (0 < devir <= 100000):
+                    raise GUV.GuvenlikHatasi("Devir 0..100000 araliginda olmali")
+                satir += f" S{devir:.0f}"
+        else:
+            raise GUV.GuvenlikHatasi(f"Bilinmeyen mil islemi: {islem}")
+        self.iletisim_komutu(satir)
+        self.gunluk.ekle("kontrol", f"Mil: {satir}")
+        return {"satir": satir}
+
+    def sogutma(self, islem, istemci=None):
+        """Sogutma: 'sel' (M8) | 'sis' (M7) | 'kapat' (M9)."""
+        self.kilit.dogrula(istemci)
+        satir = {"sel": "M8", "sis": "M7", "kapat": "M9"}.get(islem)
+        if satir is None:
+            raise GUV.GuvenlikHatasi(f"Bilinmeyen sogutma islemi: {islem}")
+        self.iletisim_komutu(satir)
+        self.gunluk.ekle("kontrol", f"Sogutma: {satir}")
+        return {"satir": satir}
 
     # ==================================================================
     # Hareket
@@ -613,8 +880,8 @@ class Denetleyici:
         """Bagil (artimli) tek adim: 'X ekseninde sola 25 mm git'."""
         self.kilit.dogrula(istemci)
         eksen = eksen.upper()
-        self._referans_gerekli([eksen])
-        feed = float(feed) if feed else self.jog_feed(bool(hizli))
+        self.hareket_hazirla([eksen])
+        feed = float(feed) if feed else self.jog.hiz_mm_dk(eksen, bool(hizli))
         feed = min(feed, float(self.ayarlar["guvenlik"]["max_jog_feed"]))
         self.guvenlik.jog_dogrula(eksen, float(mesafe), feed,
                                   self._tezgah, self._konum)
@@ -630,7 +897,7 @@ class Denetleyici:
                     for k, v in hedefler.items() if k.upper() in EKSENLER}
         if not any(v is not None for v in hedefler.values()):
             raise GUV.GuvenlikHatasi("Hedef verilmedi")
-        self._referans_gerekli(
+        self.hareket_hazirla(
             [e for e, v in hedefler.items() if v is not None] + ["Z"])
         self.guvenlik.mutlak_dogrula(hedefler, self._tezgah, self._konum,
                                      self.ofset())
@@ -657,208 +924,45 @@ class Denetleyici:
 
     def guvenli_yukselt(self, istemci=None):
         self.kilit.dogrula(istemci)
-        self._referans_gerekli(["Z"])
+        self.hareket_hazirla(["Z"])
         gz = float(self.ayarlar["guvenlik"].get("guvenli_z", 20.0))
         self._mdi("G90", f"G0 Z{gz:.3f}")
         self.gunluk.ekle("hareket", f"Guvenli yukseklige cikildi (Z{gz})")
         return {"z": gz}
 
-    # -- surekli jog ------------------------------------------------------
-    # Mach3'un COM arayuzunde gercek bir "surekli jog" cagrisi yoktur; hareket
-    # kisa artimli adimlarin ZINCIRLENMESIYLE uretilir. Hissiyati Mach3'e
-    # yaklastiran uc ayrinti:
-    #
-    #   1. Adim, bir sonraki adim gelene kadar BITMEMELI. Eskiden adim 5 mm
-    #      ile siniriydi: 4000 mm/dk'da 5 mm 0.075 sn surer ama zincir 0.15
-    #      sn'de bir gelirdi -> eksen her adim arasinda duruyordu ("tik tik").
-    #      Artik adim = feed/60 * tik * ortusme ile hesaplanir.
-    #   2. Her adim TEK MDI satiri olmali. Eskiden "G91" + "G1 ..." + "G90"
-    #      diye UC COM cagrisi gidiyordu; her cagri bir tur gecikme demektir.
-    #      Artik G91 basta bir kez, G90 sonda bir kez gonderilir.
-    #   3. Birakinca kuyrukta kalan adimlar Mach3'un Feed Hold + Stop'uyla
-    #      bosaltilir; yoksa parmagi cektikten sonra eksen bir sure daha
-    #      "kayar". Feed Hold, Mach3'un kendi yavaslama rampasini kullanir -
-    #      sert kesme olmadigi icin adim kaybi riski dogmaz.
-    def _jog_ayari(self):
-        g = self.ayarlar["guvenlik"]
-        return (max(float(g.get("jog_tik_ms", 80)), 20.0) / 1000.0,
-                max(float(g.get("jog_ortusme", 1.35)), 1.0),
-                bool(g.get("jog_birakinca_durdur", True)))
+    # -- jog (Mach3 modeli: kip, Slow Jog %, Step, Jog ON/OFF; bkz. jog.py) --
+    @property
+    def jog_bilgi(self):
+        return self.jog.durum()
 
-    def jog_feed(self, hizli=False):
-        """Yon tusu (yavas) / Shift+yon (hizli) beslemesi, sinirla kirpilmis."""
-        g = self.ayarlar["guvenlik"]
-        f = float(g.get("jog_hizli_feed", 4000.0) if hizli
-                  else g.get("jog_yavas_feed", 600.0))
-        return max(min(f, float(g.get("max_jog_feed", 6000.0))), 1.0)
+    def jog_feed(self, hizli=False, eksen="X"):
+        """Yavas (Slow Jog %) / hizli (Shift) jog beslemesi, mm/dk."""
+        return self.jog.hiz_mm_dk(eksen, hizli)
 
     def jog_basla(self, eksen, yon, feed=None, hizli=None, istemci=None):
-        """Basili tut - birak jogu.
-
-        `hizli` verilirse besleme ayarlardan alinir (Shift kipi); `feed`
-        verilirse dogrudan o kullanilir. Her adim ayri ayri guvenlik
-        denetiminden gecer ve istemcinin kalp atisi kesilirse zincir aninda
-        durur (olu adam butonu).
-        """
-        self.kilit.dogrula(istemci)
-        if self.calisiyor:
-            # Program calisirken jog hem anlamsiz hem tehlikelidir; ayrica
-            # birakinca gonderilen Feed Hold/Stop programi da keserdi.
-            raise GUV.GuvenlikHatasi(
-                "Program calisirken jog yapilamaz. Once programi durdurun.")
-        eksen, yon = eksen.upper(), (1 if yon >= 0 else -1)
-        self._referans_gerekli([eksen])
-        if feed is None:
-            feed = self.jog_feed(bool(hizli))
-        feed = min(float(feed), float(self.ayarlar["guvenlik"]["max_jog_feed"]))
-        self.jog_bitir()
-        self._jog_dur.clear()
-        self._jog_feed = feed
-        self.bekci.baslat()
-        self.jog_bilgi = {"aktif": True, "eksen": eksen, "yon": yon,
-                          "feed": feed, "hizli": bool(hizli)}
-        self._jog_is = threading.Thread(
-            target=self._jog_dongu, args=(eksen, yon), daemon=True,
-            name="jog")
-        self._jog_is.start()
-        self.gunluk.ekle("hareket", f"Surekli jog basladi {eksen}{yon:+d} "
-                                    f"@F{feed:.0f}"
-                                    + (" (hizli)" if hizli else ""))
-        return {"eksen": eksen, "yon": yon, "feed": feed,
-                "hizli": bool(hizli)}
+        """Jog tusuna basildi: Step kipinde bir adim, Continuous'ta birakilana
+        kadar hareket (Mach3'teki gibi tek giris noktasi)."""
+        return self.jog.basla(eksen, yon, feed, hizli, istemci)
 
     def jog_hiz(self, feed=None, hizli=None, istemci=None):
-        """Suren jogun beslemesini degistirir (tus basiliyken Shift'e basmak).
-
-        Jogu kesip yeniden baslatmak, zinciri bosaltip eksenin bir an
-        durmasina yol acardi; bunun yerine calisan dongu bir sonraki adimda
-        yeni beslemeyi kullanir.
-        """
-        self.kilit.dogrula(istemci)
-        if feed is None:
-            feed = self.jog_feed(bool(hizli))
-        feed = min(float(feed), float(self.ayarlar["guvenlik"]["max_jog_feed"]))
-        self._jog_feed = max(feed, 1.0)
-        if self.jog_bilgi.get("aktif"):
-            self.jog_bilgi["feed"] = self._jog_feed
-            self.jog_bilgi["hizli"] = bool(hizli)
-        return {"feed": self._jog_feed, "hizli": bool(hizli)}
-
-    def _jog_dongu(self, eksen, yon):
-        periyot, ortusme, _ = self._jog_ayari()
-        max_adim = float(self.ayarlar["guvenlik"].get("max_jog_adim", 100.0))
-        b = self.baglanti
-        g91 = False
-        # GONDERILMIS AMA HENUZ OKUNMAMIS MESAFE
-        # DRO yoklamasi 10 Hz'dir, yani konum 100 ms'ye kadar geriden gelir.
-        # Adimlar artik uzun oldugu icin (hizli jogda ~7 mm) o sure iginde
-        # gonderilen iki-uc adim, limit denetimi "hala iceridesin" derken
-        # sinirin disina tasabilir. Bu yuzden denetim, okunan konuma degil
-        # GONDERDIGIMIZ (taahhut edilen) konuma gore yapilir; yoklama daha
-        # ileriyi gosterirse ondan devam edilir.
-        taahhut = None
-        try:
-            while not self._jog_dur.is_set() and self.bekci.aktif:
-                feed = self._jog_feed
-                # Adim, bir sonraki adim gelene kadar bitmeyecek kadar uzun
-                # olmali; yoksa eksen adimlar arasinda duraklar.
-                adim = min(max(feed / 60.0 * periyot * ortusme, 0.02),
-                           max_adim)
-                ileri = (max if yon > 0 else min)
-                okunan_t = self._tezgah.get(eksen)
-                okunan_i = self._konum.get(eksen)
-                if okunan_t is None:
-                    taahhut = None
-                elif taahhut is None:
-                    taahhut = (okunan_t, okunan_i)
-                else:
-                    taahhut = (ileri(taahhut[0], okunan_t),
-                               taahhut[1] if okunan_i is None
-                               else ileri(taahhut[1], okunan_i))
-                d_tezgah, d_konum = self._tezgah, self._konum
-                if taahhut is not None:
-                    d_tezgah = dict(d_tezgah)
-                    d_tezgah[eksen] = taahhut[0]
-                    if taahhut[1] is not None:
-                        d_konum = dict(d_konum)
-                        d_konum[eksen] = taahhut[1]
-                try:
-                    self.guvenlik.jog_dogrula(eksen, yon * adim, feed,
-                                              d_tezgah, d_konum)
-                    if not g91:
-                        self._mdi("G91")
-                        g91 = True
-                    self._mdi(f"G1 {eksen}{yon * adim:.4f} F{feed:.1f}")
-                    if taahhut is not None:
-                        taahhut = (taahhut[0] + yon * adim,
-                                   None if taahhut[1] is None
-                                   else taahhut[1] + yon * adim)
-                except GUV.GuvenlikHatasi as e:
-                    self.gunluk.ekle(
-                        "guvenlik", f"Jog durduruldu: {'; '.join(e.sebepler)}")
-                    break
-                except Exception as e:                # noqa: BLE001
-                    self.gunluk.ekle("hata", f"Jog hatasi: {e}")
-                    break
-                time.sleep(periyot)
-        finally:
-            self.jog_bilgi = {"aktif": False, "eksen": None, "yon": 0}
-            self.bekci.bitir()
-            self._jog_sonlandir(b, g91)
-
-    def _jog_sonlandir(self, b, g91):
-        """Kuyrugu bosalt ve modal durumu (G90) MUTLAKA geri getir.
-
-        G91 acik unutulursa sonraki her mutlak komut artimli calisir; bu,
-        makineyi bambaska bir yere goturur. Bu yuzden hata olsa da G90
-        gonderilir.
-        """
-        _, _, birakinca_durdur = self._jog_ayari()
-        if not (b and getattr(b, "bagli", False)):
-            return
-        try:
-            b.jog_durdur()
-        except Exception:                             # noqa: BLE001
-            pass
-        if birakinca_durdur:
-            try:
-                # Feed Hold: Mach3'un kendi yavaslama rampasi (adim kaybi yok)
-                b.dugme(self.kodlar.buton["feed_hold"])
-                bitis = time.time() + 0.6
-                while time.time() < bitis:
-                    try:
-                        if not b.hareket_ediyor():
-                            break
-                    except Exception:                 # noqa: BLE001
-                        break
-                    time.sleep(0.03)
-                # Stop: kuyrukta kalan adimlari at, hold durumundan cik
-                b.dugme(self.kodlar.buton["stop"])
-            except Exception as e:                    # noqa: BLE001
-                self.gunluk.ekle("hata", f"Jog durdurma: {e}")
-        if g91:
-            for _ in range(3):
-                try:
-                    b.kod("G90")
-                    return
-                except Exception:                     # noqa: BLE001
-                    time.sleep(0.1)
-            self.gunluk.ekle(
-                "hata", "DIKKAT: jog sonrasi G90 gonderilemedi; Mach3 hala "
-                        "ARTIMLI (G91) kipte olabilir. MDI'dan G90 yazin.")
+        return self.jog.hiz(hizli, feed, istemci)
 
     def jog_kalp(self, istemci=None):
-        """Istemci 'hala basiliyim' der. Kesilirse hareket durur."""
-        self.kilit.dogrula(istemci)
-        return {"aktif": self.bekci.dokun()}
+        """Istemci 'hala basiliyim' der. Kesilirse hareket yavaslayip durur."""
+        return self.jog.kalp(istemci)
 
     def jog_bitir(self, istemci=None):
-        self._jog_dur.set()
-        self.bekci.bitir()
-        if self._jog_is and self._jog_is.is_alive():
-            self._jog_is.join(timeout=1.5)
-        self.jog_bilgi = {"aktif": False, "eksen": None, "yon": 0}
+        """Jog tusu birakildi."""
+        self.jog.birak()
+        self.jog.bekle(2.5)
         return True
+
+    def jog_ayarla(self, istemci=None, **kw):
+        self.kilit.dogrula(istemci)
+        return self.jog.ayarla(**kw)
+
+    def jog_dogrula(self, eksenler=("X", "Y", "Z"), istemci=None):
+        return self.jog.yerel_dogrula(eksenler, istemci)
 
     # ==================================================================
     # Sifirlama / is sifiri
@@ -952,101 +1056,387 @@ class Denetleyici:
         return self.git(hedef, guvenli_z_ile=True, istemci=istemci)
 
     # ==================================================================
-    # Is sifiri profilleri
+    # Home noktalari (adlandirilmis is sifirlari)
     # ==================================================================
-    # Profil, is sifirini MAKINE koordinatinda saklar. Boylece "6 mm bicak /
-    # 18 mm MDF" profilini geri cagirdiginizda, DRO'ya hangi sayiyi yazmaniz
-    # gerektigi degil, TAM OLARAK AYNI FIZIKSEL YUKSEKLIK geri gelir.
-    # Tezgah tabani denetimi bundan bagimsizdir ve her zaman gecerlidir.
-    def profiller(self):
-        p = self.ayarlar.get("profiller") or {}
-        return {"aktif": p.get("aktif", ""), "liste": p.get("liste", [])}
+    # Her "Home", bir malzemenin/isin SIFIR NOKTASIDIR ve takma adla saklanir
+    # ("Levha A", "18 mm MDF - sag ust" ...). Tezgahin farkli yerlerindeki
+    # farkli malzemeler icin istediginiz kadar Home tanimlayip tek tikla
+    # gecis yapabilirsiniz.
+    #
+    # KOORDINAT: Home, iş sifirinin TEZGAH koordinatini saklar (tezgah =
+    # makine_okumasi - referans). Makine koordinati her Mach3 acilisinda
+    # kaydigi icin ona gore saklamak, ertesi gun ayni Home'un baska bir
+    # fiziksel noktaya dusmesi demektir; tezgah koordinati ise referans
+    # yeniden alindiginda AYNI fiziksel noktayi gosterir.
+    #
+    #   uygula:   iş = tezgah - home_sifiri      (DRO'ya bu yazilir)
+    #   kaydet:   home_sifiri = tezgah - iş      (bulunulan noktadan)
+    #
+    # Eski surumde `is_sifiri_makine` adiyla saklanan kayitlar aslinda
+    # ofset() (tezgah - iş) degerleridir; ayni anlamla okunur ve arayuzde
+    # "eski kayit" diye isaretlenir. (Eski `profil_uygula` bu degeri MAKINE
+    # okumasindan cikariyordu: referans 0 degilse yanlis sifir yazardi.)
+    HOME_EKSENLER = ("X", "Y", "Z")
+    HOME_TOLERANS = 0.011                 # mm: "su an aktif" sayilma payi
 
-    def _profil_bul(self, ad):
-        for p in (self.ayarlar.get("profiller") or {}).get("liste", []):
-            if p.get("ad") == ad:
+    def _home_listesi(self):
+        return list((self.ayarlar.get("profiller") or {}).get("liste", []))
+
+    @staticmethod
+    def _home_tezgah(kayit):
+        """Kaydin is sifiri TEZGAH koordinati ({eksen: mm})."""
+        t = kayit.get("tezgah")
+        eski = not (isinstance(t, dict) and t)
+        if eski:
+            t = kayit.get("is_sifiri_makine") or {}
+        out = {}
+        for e, v in t.items():
+            if e in EKSENLER and v is not None:
+                try:
+                    out[e] = float(v)
+                except (TypeError, ValueError):
+                    pass
+        return out, eski
+
+    def _home_bul(self, ad):
+        hedef = (ad or "").strip().lower()
+        for p in self._home_listesi():
+            if (p.get("ad") or "").strip().lower() == hedef:
                 return p
         return None
 
-    def profil_kaydet(self, ad, takim_boyu=None, not_=None, istemci=None):
-        """MEVCUT is sifirini, makine koordinatiyla birlikte profile yazar."""
-        self.kilit.dogrula(istemci)
-        ad = (ad or "").strip()
+    def _mevcut_sifir(self):
+        """Su anki is sifirinin tezgah koordinati ({eksen: mm}); bilinmeyen
+        eksen yoktur."""
+        out = {}
+        for e in self.HOME_EKSENLER:
+            i, t = self._konum.get(e), self._tezgah.get(e)
+            if i is not None and t is not None:
+                out[e] = round(t - i, 4)
+        return out
+
+    def homeler(self):
+        """Arayuz icin: kayitlar + hangisinin SU AN gecerli oldugu.
+
+        `uyumlu`, saklanan sifir ile Mach3'un gercek sifiri ayni mi diye
+        bakar; sifiri elle degistirdiyseniz eski ismin "aktif" kalmasini
+        onler.
+        """
+        p = self.ayarlar.get("profiller") or {}
+        mevcut = self._mevcut_sifir()
+        liste = []
+        for r in p.get("liste", []):
+            tz, eski = self._home_tezgah(r)
+            ortak = [e for e in tz if e in mevcut]
+            uyumlu = None
+            fark = {}
+            if tz and ortak:
+                fark = {e: round(mevcut[e] - tz[e], 3) for e in ortak}
+                uyumlu = (len(ortak) == len(tz) and
+                          all(abs(v) <= self.HOME_TOLERANS
+                              for v in fark.values()))
+            liste.append({
+                "ad": r.get("ad", ""),
+                "tezgah": {e: round(v, 3) for e, v in tz.items()},
+                "malzeme": r.get("malzeme") or "",
+                "not": r.get("not") or "",
+                "takim_boyu": r.get("takim_boyu"),
+                "guvenli_z": r.get("guvenli_z"),
+                "zaman": r.get("zaman"),
+                "eski": eski,
+                "uyumlu": uyumlu,
+                "fark": fark,
+            })
+        kayitli = p.get("aktif", "")
+        gercek = ""
+        for r in liste:
+            if r["ad"] == kayitli and r["uyumlu"]:
+                gercek = kayitli
+                break
+        else:
+            for r in liste:
+                if r["uyumlu"]:
+                    gercek = r["ad"]
+                    break
+        return {"aktif": kayitli, "aktif_gercek": gercek, "liste": liste,
+                "mevcut": {e: round(v, 3) for e, v in mevcut.items()}}
+
+    # eski ad (arayuz/testler)
+    def profiller(self):
+        return self.homeler()
+
+    def _profil_bul(self, ad):
+        return self._home_bul(ad)
+
+    # -- dogrulama yardimcilari -------------------------------------------
+    @staticmethod
+    def _home_ad(ad):
+        ad = " ".join(str(ad or "").split())            # bosluklari sadelestir
         if not ad:
-            raise GUV.GuvenlikHatasi("Profil adi bos olamaz")
-        if not self.bagli:
-            raise GUV.GuvenlikHatasi(
-                "Profil kaydetmek icin Mach3 baglantisi gerekir "
-                "(makine koordinati okunmali).")
-        ofs = self.ofset()
-        eksik = [e for e in ("X", "Y", "Z") if self._makine.get(e) is None]
-        if eksik:
-            raise GUV.GuvenlikHatasi(
-                "Makine koordinati okunamiyor: " + ", ".join(eksik) +
-                ". OEM kodlarini (makine_x/y/z) kontrol edin.")
-        kayit = {
-            "ad": ad,
-            "takim_boyu": (None if takim_boyu is None else float(takim_boyu)),
-            # is sifirinin makine koordinatindaki yeri = ofset
-            "is_sifiri_makine": {e: round(ofs.get(e, 0.0), 4)
-                                 for e in ("X", "Y", "Z")},
-            "guvenli_z": float(self.ayarlar["guvenlik"].get("guvenli_z", 20.0)),
-            "not": not_ or "",
-            "zaman": time.time(),
-        }
-        liste = [p for p in (self.ayarlar.get("profiller") or {})
-                 .get("liste", []) if p.get("ad") != ad]
-        liste.append(kayit)
-        liste.sort(key=lambda p: p.get("ad", "").lower())
-        self.ayarlar.guncelle({"profiller": {"liste": liste, "aktif": ad}})
-        self.gunluk.ekle(
-            "profil",
-            f"Profil kaydedildi: {ad} (is sifiri makine Z "
-            f"{kayit['is_sifiri_makine']['Z']:.3f})")
-        return kayit
+            raise GUV.GuvenlikHatasi("Home takma adi bos olamaz")
+        if len(ad) > 60:
+            raise GUV.GuvenlikHatasi("Home takma adi en fazla 60 karakter")
+        return ad
 
-    def profil_uygula(self, ad, eksenler=("X", "Y", "Z"), istemci=None):
-        """Kayitli is sifirini geri yukler.
+    @staticmethod
+    def _home_sayilari(tezgah):
+        """{"X": 12.5, "Y": None} -> {"X": 12.5}; sayi olmayani reddeder."""
+        out = {}
+        for e, v in (tezgah or {}).items():
+            e = str(e).upper()
+            if e not in Denetleyici.HOME_EKSENLER:
+                raise GUV.GuvenlikHatasi(f"Bilinmeyen eksen: {e}")
+            if v is None or v == "":
+                continue
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                raise GUV.GuvenlikHatasi(f"{e} koordinati sayi olmali")
+            if f != f or f in (float("inf"), float("-inf")):
+                raise GUV.GuvenlikHatasi(f"{e} koordinati sonlu bir sayi olmali")
+            if abs(f) > 1e6:
+                raise GUV.GuvenlikHatasi(f"{e} koordinati makul degil: {f:g}")
+            out[e] = round(f, 4)
+        return out
 
-        Makine konumu okunur, profilin makine-ofsetine gore DRO'ya yazilacak
-        is degeri hesaplanir: is = makine - ofset
+    @staticmethod
+    def _home_sayi_veya_none(v, ad):
+        if v is None or v == "":
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            raise GUV.GuvenlikHatasi(f"{ad} sayi olmali")
+
+    def _home_uyarilari(self, tezgah):
+        """Home'un tezgah araligi disinda kalip kalmadigi (engellemez, uyarir)."""
+        uyar = []
+        if not self.guvenlik.limitler_aktif():
+            return uyar
+        for e, v in tezgah.items():
+            lim = self.guvenlik.limit(e)
+            if lim and (v < float(lim["min"]) - 1e-6 or
+                        v > float(lim["max"]) + 1e-6):
+                uyar.append(f"{e} sifiri ({v:g}) tezgah araliginin "
+                            f"({float(lim['min']):g}..{float(lim['max']):g}) "
+                            "disinda; Home'u kontrol edin")
+        return uyar
+
+    def _home_yaz(self, liste, aktif=None):
+        liste = sorted(liste, key=lambda p: (p.get("ad") or "").lower())
+        yama = {"liste": liste}
+        if aktif is not None:
+            yama["aktif"] = aktif
+        self.ayarlar.guncelle({"profiller": yama})
+
+    # -- kaydet ------------------------------------------------------------
+    def home_kaydet(self, ad, tezgah=None, eksenler=None, takim_boyu=None,
+                    malzeme=None, not_=None, guvenli_z=None,
+                    uzerine_yaz=False, istemci=None):
+        """Yeni bir Home kaydeder.
+
+        `tezgah` verilirse ({"X": 500, "Z": -18}) o koordinatlar saklanir
+        (elle tanimlama; baglanti gerekmez). Verilmezse BULUNULAN is sifiri
+        okunur. Ayni ad varsa `uzerine_yaz` olmadan reddedilir.
         """
         self.kilit.dogrula(istemci)
-        p = self._profil_bul(ad)
-        if not p:
-            raise GUV.GuvenlikHatasi(f"Profil bulunamadi: {ad}")
+        ad = self._home_ad(ad)
+        var = self._home_bul(ad)
+        if var is not None and not uzerine_yaz:
+            raise GUV.GuvenlikHatasi(
+                f"'{var['ad']}' adinda bir Home zaten var. Uzerine yazmak icin "
+                "onaylayin ya da baska bir ad verin.")
+        if tezgah:
+            sayilar = self._home_sayilari(tezgah)
+            kaynak = "elle"
+        else:
+            self._gerekli()
+            self._oku(tam=True)
+            istenen = [e.upper() for e in (eksenler or self.HOME_EKSENLER)
+                       if e.upper() in self.HOME_EKSENLER]
+            sayilar, eksik = {}, []
+            for e in istenen:
+                i, t = self._konum.get(e), self._tezgah.get(e)
+                if self.referans.get(e) is None or i is None or t is None:
+                    eksik.append(e)
+                else:
+                    sayilar[e] = round(t - i, 4)
+            if eksik:
+                raise GUV.GuvenlikHatasi(
+                    "Home kaydedilemedi: " + ", ".join(eksik) + " icin tezgah "
+                    "referansi alinmadi. Home, tezgah koordinatiyla saklanir; "
+                    "once referans alin (ya da koordinatlari elle girin).")
+            kaynak = "mevcut"
+        if not sayilar:
+            raise GUV.GuvenlikHatasi("Home icin en az bir eksen koordinati gerekli")
+        eski = var or {}
+        kayit = {
+            "ad": ad,
+            "tezgah": sayilar,
+            "malzeme": (malzeme if malzeme is not None
+                        else eski.get("malzeme", "")) or "",
+            "not": (not_ if not_ is not None else eski.get("not", "")) or "",
+            "takim_boyu": (self._home_sayi_veya_none(takim_boyu, "Takim boyu")
+                           if takim_boyu is not None
+                           else eski.get("takim_boyu")),
+            "guvenli_z": (self._home_sayi_veya_none(guvenli_z, "Guvenli Z")
+                          if guvenli_z is not None else eski.get("guvenli_z")),
+            "zaman": time.time(),
+        }
+        liste = [p for p in self._home_listesi()
+                 if (p.get("ad") or "").strip().lower() != ad.lower()]
+        liste.append(kayit)
+        self._home_yaz(liste, aktif=ad if kaynak == "mevcut" else None)
+        self.gunluk.ekle(
+            "home", f"Home {'guncellendi' if var else 'kaydedildi'}: {ad} "
+                    f"({kaynak}) {sayilar}")
+        return {"ad": ad, "home": kayit, "uyarilar": self._home_uyarilari(sayilar),
+                "homeler": self.homeler()}
+
+    # -- duzenle / yeniden adlandir ---------------------------------------
+    def home_duzenle(self, ad, istemci=None, **alanlar):
+        """Var olan bir Home'un adini, koordinatlarini ya da notlarini degistirir.
+
+        alanlar: yeni_ad, tezgah ({"X": 12} - bos/None eksen SILER), malzeme,
+        not, takim_boyu, guvenli_z.
+        """
+        self.kilit.dogrula(istemci)
+        kayit = self._home_bul(ad)
+        if kayit is None:
+            raise GUV.GuvenlikHatasi(f"Home bulunamadi: {ad}")
+        yeni = dict(kayit)
+        eski_ad = kayit["ad"]
+        if alanlar.get("yeni_ad") not in (None, ""):
+            yeni_ad = self._home_ad(alanlar["yeni_ad"])
+            baska = self._home_bul(yeni_ad)
+            if baska is not None and baska is not kayit and \
+                    (baska.get("ad") or "").lower() != eski_ad.lower():
+                raise GUV.GuvenlikHatasi(
+                    f"'{baska['ad']}' adinda baska bir Home zaten var")
+            yeni["ad"] = yeni_ad
+        if alanlar.get("tezgah") is not None:
+            tz, _ = self._home_tezgah(kayit)
+            for e, v in (alanlar["tezgah"] or {}).items():
+                e = str(e).upper()
+                if e not in self.HOME_EKSENLER:
+                    raise GUV.GuvenlikHatasi(f"Bilinmeyen eksen: {e}")
+                if v is None or v == "":
+                    tz.pop(e, None)               # boslugu = bu eksen saklanmaz
+                else:
+                    tz.update(self._home_sayilari({e: v}))
+            if not tz:
+                raise GUV.GuvenlikHatasi("Home en az bir eksen koordinati tasimali")
+            yeni["tezgah"] = {e: round(v, 4) for e, v in tz.items()}
+            yeni.pop("is_sifiri_makine", None)    # eski alan artik gecersiz
+        if "malzeme" in alanlar and alanlar["malzeme"] is not None:
+            yeni["malzeme"] = str(alanlar["malzeme"])[:80]
+        if "not" in alanlar and alanlar["not"] is not None:
+            yeni["not"] = str(alanlar["not"])[:200]
+        if "takim_boyu" in alanlar:
+            yeni["takim_boyu"] = self._home_sayi_veya_none(
+                alanlar["takim_boyu"], "Takim boyu")
+        if "guvenli_z" in alanlar:
+            yeni["guvenli_z"] = self._home_sayi_veya_none(
+                alanlar["guvenli_z"], "Guvenli Z")
+        yeni["zaman"] = time.time()
+        liste = [p for p in self._home_listesi() if p is not kayit
+                 and (p.get("ad") or "") != eski_ad]
+        liste.append(yeni)
+        aktif = (self.ayarlar.get("profiller") or {}).get("aktif", "")
+        self._home_yaz(liste, aktif=yeni["ad"] if aktif == eski_ad else None)
+        self.gunluk.ekle("home", f"Home duzenlendi: {eski_ad}"
+                         + (f" -> {yeni['ad']}" if yeni["ad"] != eski_ad else ""))
+        tz, _ = self._home_tezgah(yeni)
+        return {"ad": yeni["ad"], "home": yeni,
+                "uyarilar": self._home_uyarilari(tz),
+                "homeler": self.homeler()}
+
+    # -- uygula -------------------------------------------------------------
+    def home_uygula(self, ad, eksenler=None, git=False, istemci=None):
+        """Home'u gecerli is sifiri yapar (DRO'ya yazar).
+
+        iş = tezgah - home_sifiri. Her eksen geri okunarak DOGRULANIR; Mach3
+        Reset'teyse sessizce yok sayilan yazma acik hata olur. `git=True`
+        ise sifira (X0 Y0) guvenli Z ile gidilir.
+        """
+        self.kilit.dogrula(istemci)
+        kayit = self._home_bul(ad)
+        if kayit is None:
+            raise GUV.GuvenlikHatasi(f"Home bulunamadi: {ad}")
+        ad = kayit["ad"]
         self._gerekli()
-        ofs = p.get("is_sifiri_makine") or {}
-        yazilan, atlanan = {}, []
-        for e in eksenler:
-            e = e.upper()
-            if e not in ofs or self._makine.get(e) is None:
+        self._oku(tam=True)
+        if self._ek.get("estop"):
+            raise GUV.GuvenlikHatasi(
+                "Mach3 RESET (E-Stop) durumunda; Home uygulanamadi (DRO yazma "
+                "bu durumda sessizce yok sayilir). Once Reset'i kaldirin.")
+        self._dururken("Home uygulama")
+        tz, eski = self._home_tezgah(kayit)
+        istenen = [e.upper() for e in (eksenler or tz.keys())]
+        yazilan, atlanan, referanssiz = {}, [], []
+        for e in istenen:
+            if e not in tz:
                 atlanan.append(e)
                 continue
-            # Her eksen geri okunarak dogrulanir; Mach3 Reset durumundaysa
-            # burada acik bir hata alinir (sessizce "yuklendi" denmez).
-            deger = self._makine[e] - float(ofs[e])
+            t = self._tezgah.get(e)
+            if self.referans.get(e) is None or t is None:
+                referanssiz.append(e)
+                continue
+            deger = t - tz[e]
+            # Her eksen geri okunarak dogrulanir (Reset'te sessiz basarisizlik)
             self._sifir_yaz_dogrula(e, deger)
             yazilan[e] = round(deger, 4)
+        if referanssiz and not yazilan:
+            raise GUV.GuvenlikHatasi(
+                "Home uygulanamadi: " + ", ".join(referanssiz) + " icin tezgah "
+                "referansi alinmadi. Home tezgah koordinatiyla saklandigi icin "
+                "once referans alin.")
         if not yazilan:
             raise GUV.GuvenlikHatasi(
-                f"Profil uygulanamadi: hicbir eksen yazilamadi ({atlanan}). "
-                "Makine koordinati okunamiyor olabilir.")
-        if p.get("guvenli_z") is not None:
+                f"Home uygulanamadi: hicbir eksen yazilamadi ({atlanan}).")
+        if kayit.get("guvenli_z") is not None:
             self.ayarlar.guncelle(
-                {"guvenlik": {"guvenli_z": float(p["guvenli_z"])}})
+                {"guvenlik": {"guvenli_z": float(kayit["guvenli_z"])}})
         self.ayarlar.guncelle({"profiller": {"aktif": ad}})
-        self.gunluk.ekle("profil", f"Profil uygulandi: {ad} -> {yazilan}")
-        return {"ad": ad, "yazilan": yazilan, "profil": p}
+        self.gunluk.ekle("home", f"Home uygulandi: {ad} -> {yazilan}")
+        sonuc = {"ad": ad, "yazilan": yazilan, "profil": kayit, "eski": eski,
+                 "referanssiz": referanssiz, "git": False}
+        if git:
+            try:
+                self.sifira_git(("X", "Y"), istemci=istemci)
+                sonuc["git"] = True
+            except GUV.GuvenlikHatasi as e:
+                # Home uygulandi; yalnizca gitme reddedildi - bunu gizleme
+                sonuc["git_hata"] = str(e)
+                sonuc["sebepler"] = list(e.sebepler)
+        sonuc["homeler"] = self.homeler()
+        return sonuc
+
+    # -- sil ----------------------------------------------------------------
+    def home_sil(self, ad, istemci=None):
+        self.kilit.dogrula(istemci)
+        kayit = self._home_bul(ad)
+        if kayit is None:
+            raise GUV.GuvenlikHatasi(f"Home bulunamadi: {ad}")
+        p = self.ayarlar.get("profiller") or {}
+        liste = [x for x in p.get("liste", []) if x is not kayit
+                 and x.get("ad") != kayit["ad"]]
+        aktif = "" if p.get("aktif") == kayit["ad"] else p.get("aktif", "")
+        self._home_yaz(liste, aktif=aktif)
+        self.gunluk.ekle("home", f"Home silindi: {kayit['ad']}")
+        return {"ok": True, "homeler": self.homeler()}
+
+    # -- eski adlar (geriye uyumluluk) -----------------------------------------
+    def profil_kaydet(self, ad, takim_boyu=None, not_=None, istemci=None):
+        r = self.home_kaydet(ad, takim_boyu=takim_boyu, not_=not_,
+                             uzerine_yaz=True, istemci=istemci)
+        return r["home"]
+
+    def profil_uygula(self, ad, eksenler=("X", "Y", "Z"), istemci=None):
+        return self.home_uygula(ad, eksenler, False, istemci)
 
     def profil_sil(self, ad, istemci=None):
-        self.kilit.dogrula(istemci)
-        p = self.ayarlar.get("profiller") or {}
-        liste = [x for x in p.get("liste", []) if x.get("ad") != ad]
-        aktif = "" if p.get("aktif") == ad else p.get("aktif", "")
-        self.ayarlar.guncelle({"profiller": {"liste": liste, "aktif": aktif}})
-        self.gunluk.ekle("profil", f"Profil silindi: {ad}")
-        return {"ok": True}
+        return self.home_sil(ad, istemci)
 
     # ==================================================================
     # Kalibrasyon (dijital kumpasla)
@@ -1450,6 +1840,21 @@ class Denetleyici:
         yeni = float(deger) if deger is not None else mevcut + float(delta or 0)
         yeni = max(1.0, min(yeni, 250.0))
         b.dro_yaz(self.kodlar.dro["fro"], yeni)
+        # Mach3 Reset'teyken SetOEMDRO'yu SESSIZCE yok sayar: geri oku.
+        okunan = None
+        for _ in range(6):
+            time.sleep(0.1)
+            try:
+                okunan = b.dro(self.kodlar.dro["fro"])
+            except Exception:                         # noqa: BLE001
+                okunan = None
+            if okunan is not None and abs(okunan - yeni) <= 0.5:
+                break
+        if okunan is not None and abs(okunan - yeni) > 0.5:
+            raise GUV.GuvenlikHatasi(
+                f"Besleme override %{yeni:.0f} yazilamadi (Mach3 %{okunan:.0f} "
+                "gosteriyor)." + (" Mach3 RESET durumunda olabilir."
+                                  if self._ek.get("estop") else ""))
         self._ek["fro"] = yeni
         if self.program:
             self._sure_hesapla(yeni)
@@ -1475,7 +1880,7 @@ class Denetleyici:
         satirlar = [s for s in str(satir).splitlines() if s.strip()]
         if not satirlar:
             raise GUV.GuvenlikHatasi("Bos MDI satiri")
-        self._referans_gerekli(["X", "Y", "Z"])
+        self.hareket_hazirla(["X", "Y", "Z"])
         if GC.g91_var_mi(satirlar) and len(satirlar) > 1:
             self.gunluk.ekle("guvenlik", "MDI'da G91 var - dikkat")
         # is koordinatinda kapsam -> makine koordinatina cevir -> limit denetimi
@@ -1541,6 +1946,25 @@ class Denetleyici:
             "olcu": self.program.olculer(),
         }
 
+    def program_satirlari(self, bas=0, adet=3000):
+        """Mach3'e yuklu dosyanin ham satirlari (G-Code penceresi).
+
+        Mach3'un 'Current Line' DRO'su (816) YUKLU dosyaya gore sayar: bloktan
+        baslatmada bu, orijinal dosya degil uretilen yeniden baslatma
+        dosyasidir; bu yuzden calistirilan dosya gosterilir.
+        """
+        yol = ((self.son_calistirma or {}).get("dosya")
+               if self.calisiyor else None) or self.program_yol
+        if not yol or not os.path.isfile(yol):
+            return {"yol": "", "ad": "", "satirlar": [], "toplam": 0,
+                    "bas": 0}
+        with open(yol, "r", encoding="utf-8", errors="replace") as f:
+            tum = f.read().splitlines()      # Mach3 bos satirlari da sayar
+        bas = max(0, int(bas))
+        adet = max(1, min(int(adet), 20000))
+        return {"yol": yol, "ad": os.path.basename(yol), "toplam": len(tum),
+                "bas": bas, "satirlar": tum[bas:bas + adet]}
+
     def blok_sec(self, index):
         if not self.program:
             raise GUV.GuvenlikHatasi("Once bir program yukleyin")
@@ -1592,7 +2016,7 @@ class Denetleyici:
             raise GUV.GuvenlikHatasi(
                 "Onay gerekli: baslatmadan once denetim sonucunu onaylayin",
                 denetim["hatalar"] + denetim["uyarilar"])
-        self._gerekli()
+        self.hareket_hazirla()
 
         if b == 0:
             calisacak = self.program_yol
@@ -1608,9 +2032,19 @@ class Denetleyici:
                     "spindle_bekleme_sn", 4.0))
 
         self.baglanti.dosya_yukle(calisacak)
-        time.sleep(0.4)                     # Mach3'un dosyayi acmasini bekle
+        # Mach3 dosyayi yuklerken Cycle Start'a basmak yarim programi calistirir
+        time.sleep(0.2)
+        for _ in range(100):                          # en fazla ~10 sn
+            try:
+                yukleniyor = self.baglanti.yukleniyor()
+            except Exception:                         # noqa: BLE001
+                yukleniyor = None
+            if not yukleniyor:
+                break
+            time.sleep(0.1)
         self.baglanti.dugme(self.kodlar.buton["cycle_start"])
         self.calisiyor = True
+        self._run_goruldu = False
         self._bitis_bekle = 0
         self.son_calistirma = {"dosya": calisacak, "blok": b,
                                "zaman": time.time(),
@@ -1619,7 +2053,7 @@ class Denetleyici:
         self.takip.basla(
             self.program_yol, b, self.blok_sureler, denetim.get("sure"),
             konum=dict(self._konum),
-            profil=(self.ayarlar.get("profiller") or {}).get("aktif", ""),
+            profil=self.homeler().get("aktif_gercek", ""),
             taban=self.guvenlik.z_taban())
         self.gunluk.ekle("program",
                          f"BASLATILDI: blok {b + 1}/"

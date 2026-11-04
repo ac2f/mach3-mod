@@ -9,7 +9,7 @@ Buradaki testlerin varlik sebebi tek bir cumle:
      tezgaha dalinmasin."
 
 `max_dalis_derinlik` IS koordinatindadir ve her sifirlamada baska bir
-fiziksel yuksekli§e denk gelir - bu yuzden tezgahi KORUMAZ. Koruma
+fiziksel yukseklige denk gelir - bu yuzden tezgahi KORUMAZ. Koruma
 `makine_z_taban` ile yapilir; asagidaki testler bunun is sifirindan
 BAGIMSIZ oldugunu kanitlar.
 """

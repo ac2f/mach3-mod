@@ -8,8 +8,11 @@ arayuzu.
 
 Ana parcalar:
     ayarlar        - yapilandirma (JSON)
-    kodlar         - Mach3 OEM DRO/LED/dugme kod haritasi
-    baglanti       - COM (gercek Mach3) + simulasyon arka uclari
+    kodlar         - Mach3 OEM DRO/LED/dugme kod haritasi (Mach3'un kendi
+                     DROs/Buttons/Leds listelerinden turetilir)
+    baglanti       - COM (gercek Mach3): oncelikli kuyruk, toplu okuma
+    sanal_makine   - Mach3'u fiziksel olarak taklit eden simulasyon arka ucu
+    jog            - Mach3 jog modeli: Cont/Step, Slow Jog %, Jog ON/OFF
     guvenlik       - limit/adim/derinlik denetimi, kalp atisi, kontrol kilidi
     klavye_kilidi  - Windows dusuk seviye klavye hooku + odak bekcisi
     gcode          - blok ayristirma, sira gosterimi, bloktan baslatma
@@ -19,11 +22,12 @@ Ana parcalar:
     webapp         - bagimliliksiz web sunucusu + arayuz
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
-from . import (ayarlar, kodlar, baglanti, guvenlik, klavye_kilidi,  # noqa: F401
-               gcode, sure, kalibrasyon, denetleyici, webapp, cli)
+from . import (ayarlar, kodlar, baglanti, sanal_makine, guvenlik,  # noqa: F401
+               klavye_kilidi, gcode, sure, kalibrasyon, jog, denetleyici,
+               webapp, cli)
 
-__all__ = ["ayarlar", "kodlar", "baglanti", "guvenlik", "klavye_kilidi",
-           "gcode", "sure", "kalibrasyon", "denetleyici", "webapp", "cli",
-           "__version__"]
+__all__ = ["ayarlar", "kodlar", "baglanti", "sanal_makine", "guvenlik",
+           "klavye_kilidi", "gcode", "sure", "kalibrasyon", "jog",
+           "denetleyici", "webapp", "cli", "__version__"]

@@ -49,8 +49,19 @@ def _sira_yaz(yol, ayarlar):
               f"{SURE.sure_metni(s['toplam_sn']):>10}")
 
 
+def _konsol_guvenli():
+    """Windows konsolu (cp1252/cp857) Turkce karakterlerde coker; yazdirirken
+    karakteri `?` yapip devam etsin."""
+    for akim in (sys.stdout, sys.stderr):
+        try:
+            akim.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv=None):
     from . import ayarlar as AY
+    _konsol_guvenli()
 
     ap = argparse.ArgumentParser(
         prog="mach3-kontrol",

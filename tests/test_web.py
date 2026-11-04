@@ -213,6 +213,10 @@ def _kalibrasyon_bekle():
 def test_kalibrasyon_akisi():
     """Olc → hesapla → Mach3'e girilecek degeri dondur (simulasyonda)."""
     kur()
+    # Kafa tezgahin ortasinda olsun: bosluk alma -X yonune de gidecek ve
+    # alt limitte olmamali (onceki testlere bagimli kalmasin).
+    cagir("/api/referans", {"islem": "al", "eksenler": ["X", "Y", "Z"],
+                            "degerler": {"X": 250.0, "Y": 250.0, "Z": 0.0}})
     d = cagir("/api/kalibrasyon", {
         "islem": "basla", "eksen": "X", "tur": "olcek", "mesafe": 10.0,
         "feed": 3000.0, "on_yaklasma": 2.0, "tekrar": 1,

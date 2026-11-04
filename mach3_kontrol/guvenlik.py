@@ -28,6 +28,7 @@ donabilir. **Tek gercek guvenlik cihazi donanim acil-stop butonu ve limit
 switchleridir.** Bu program onlarin yerine gecmez.
 """
 
+import queue
 import threading
 import time
 from collections import deque
@@ -45,13 +46,21 @@ class GuvenlikHatasi(Exception):
 
 # ----------------------------------------------------------------------
 class Gunluk:
-    """Son N olayin halka tamponu (kaza sonrasi 'ne oldu' sorusu icin)."""
+    """Son N olayin halka tamponu (kaza sonrasi 'ne oldu' sorusu icin).
+
+    Dosyaya yazma ARKA PLAN is parcaciginda yapilir. Neden: `ekle` hareketi
+    durduran yollardan cagrilir; diskte (OneDrive, antivirus) bir yazma
+    yuzlerce milisaniye takilabilir ve eksen bu surede kontrolsuz ilerler.
+    Guvenlik yolu hicbir zaman disk G/Ç'sini beklememelidir.
+    """
 
     def __init__(self, boyut=500, dosya=None):
         self.olaylar = deque(maxlen=boyut)
         self.dosya = dosya
         self._sira = 0
         self._kilit = threading.Lock()
+        self._yaz_kuyruk = queue.Queue()
+        self._yaz_is = None
 
     def ekle(self, tur, mesaj, ek=None):
         with self._kilit:
@@ -59,15 +68,45 @@ class Gunluk:
             kayit = {"id": self._sira, "t": time.time(), "tur": tur,
                      "mesaj": mesaj, "ek": ek or {}}
             self.olaylar.append(kayit)
-            if self.dosya:
-                try:
-                    with open(self.dosya, "a", encoding="utf-8") as f:
-                        zaman = time.strftime("%Y-%m-%d %H:%M:%S",
-                                              time.localtime(kayit["t"]))
-                        f.write(f"{zaman}\t{tur}\t{mesaj}\n")
-                except OSError:
-                    pass
+        if self.dosya:
+            self._yaz_kuyruk.put(kayit)
+            if self._yaz_is is None or not self._yaz_is.is_alive():
+                with self._kilit:
+                    if self._yaz_is is None or not self._yaz_is.is_alive():
+                        self._yaz_is = threading.Thread(
+                            target=self._yaz_dongu, daemon=True,
+                            name="gunluk-yazici")
+                        self._yaz_is.start()
         return kayit
+
+    def _yaz_dongu(self):
+        while True:
+            try:
+                kayit = self._yaz_kuyruk.get(timeout=5.0)
+            except queue.Empty:
+                return                       # bosta: is parcacigi kapanir
+            satirlar = [kayit]
+            while len(satirlar) < 200:       # birikenleri tek acista yaz
+                try:
+                    satirlar.append(self._yaz_kuyruk.get_nowait())
+                except queue.Empty:
+                    break
+            try:
+                with open(self.dosya, "a", encoding="utf-8") as f:
+                    for k in satirlar:
+                        zaman = time.strftime("%Y-%m-%d %H:%M:%S",
+                                              time.localtime(k["t"]))
+                        f.write(zaman + "\t" + k["tur"] + "\t"
+                                + k["mesaj"] + "\n")
+            except OSError:
+                pass
+
+    def bosalt(self, zaman_asimi=2.0):
+        """Bekleyen satirlarin diske yazilmasini bekler (test/kapanis)."""
+        bitis = time.time() + zaman_asimi
+        while not self._yaz_kuyruk.empty() and time.time() < bitis:
+            time.sleep(0.01)
+        time.sleep(0.02)
 
     def liste(self, adet=100, sonra=0):
         """`sonra`dan buyuk id'li olaylar (arayuze artimli aktarim icin)."""
@@ -84,10 +123,16 @@ class KalpAtisiBekcisi:
     gecti, wifi koptu) `dur_geri_cagri` tetiklenir ve hareket durdurulur.
     """
 
-    def __init__(self, dur_geri_cagri, zaman_asimi_ms=400, en_fazla_sn=30.0):
+    def __init__(self, dur_geri_cagri, zaman_asimi_ms=400, en_fazla_sn=30.0,
+                 ilk_tolerans=None):
         self.dur = dur_geri_cagri
         self.zaman_asimi = zaman_asimi_ms / 1000.0
         self.en_fazla_sn = en_fazla_sn
+        # Ilk kalp atisi, "jog basla" yanitinin istemciye ulasmasini ve
+        # istemcinin zamanlayicisini kurmasini beklemek zorundadir; bu sure
+        # normal aralik icinde sayilirsa ag gecikmesi jogu sebepsiz keser.
+        # None -> aralik kadar ek tolerans.
+        self.ilk_tolerans = ilk_tolerans
         self._son = 0.0
         self._basla = 0.0
         self._aktif = False
@@ -98,7 +143,10 @@ class KalpAtisiBekcisi:
     def baslat(self):
         with self._kilit:
             simdi = time.time()
-            self._son = self._basla = simdi
+            tol = (self.zaman_asimi if self.ilk_tolerans is None
+                   else float(self.ilk_tolerans))
+            self._basla = simdi
+            self._son = simdi + max(tol, 0.0)     # ilk atisa ek sure
             self._aktif = True
             self._olay.clear()
             if not (self._is and self._is.is_alive()):
@@ -326,6 +374,36 @@ class Guvenlik:
             raise GuvenlikHatasi("Jog reddedildi", sebepler)
         return True
 
+    def jog_menzil(self, eksen, yon, tezgah, is_konum=None):
+        """Bu yonde, TUM sinirlar icinde en fazla kac mm gidilebilir?
+
+        Surekli jog bunu kullanir: Mach3 yumusak limite varinca durur;
+        burada da hareket sinira DOGRU yavaslayarak biter. Doner:
+        (mesafe_mm | None, sebep). None = sinirsiz. 0 = hemen durmali.
+        """
+        eksen = eksen.upper()
+        yon = 1 if yon >= 0 else -1
+        sinirlar = []
+        mevcut = (tezgah or {}).get(eksen)
+        if self.limitler_aktif() and self.limit_araligi(eksen):
+            if mevcut is None:
+                return 0.0, "tezgah koordinati bilinmiyor"
+            alt, ust = self.limit_araligi(eksen)
+            sinirlar.append((ust - mevcut if yon > 0 else mevcut - alt,
+                             "yumusak limit"))
+        if eksen == "Z" and yon < 0:
+            taban = self.z_taban()
+            if taban is not None and mevcut is not None:
+                sinirlar.append((mevcut - taban, "tezgah tabani"))
+            derin = self.g.get("max_dalis_derinlik")
+            z_is = (is_konum or {}).get("Z")
+            if derin is not None and z_is is not None:
+                sinirlar.append((z_is - float(derin), "en derin elle inis"))
+        if not sinirlar:
+            return None, ""
+        kalan, sebep = min(sinirlar, key=lambda t: t[0])
+        return max(kalan, 0.0), sebep
+
     def mutlak_dogrula(self, hedefler, makine_konum, is_konum, ofset):
         """Mutlak (is koordinati) hedef denetimi.
 
@@ -461,8 +539,6 @@ class Guvenlik:
             "yumusak_limit_zorunlu": bool(g.get("yumusak_limit_zorunlu")),
             "max_jog_adim": g.get("max_jog_adim"),
             "max_jog_feed": g.get("max_jog_feed"),
-            "jog_yavas_feed": g.get("jog_yavas_feed"),
-            "jog_hizli_feed": g.get("jog_hizli_feed"),
             "guvenli_z": g.get("guvenli_z"),
             "max_dalis_derinlik": g.get("max_dalis_derinlik"),
             "makine_z_taban": g.get("makine_z_taban"),
@@ -470,4 +546,6 @@ class Guvenlik:
                                                  True)),
             "max_surekli_jog_sn": g.get("max_surekli_jog_sn"),
             "home_zorunlu": bool(g.get("home_zorunlu")),
+            "acil_reset": bool(g.get("acil_reset", True)),
+            "birim_zorla_mm": bool(g.get("birim_zorla_mm", True)),
         }

@@ -22,6 +22,7 @@ bulunmayabilir. Baglanti kurulurken hangi metotlarin var oldugu tespit edilir
 yutulmaz, kullaniciya bildirilir.
 """
 
+import itertools
 import math
 import os
 import platform
@@ -35,15 +36,29 @@ import time
 _WORD_RE = re.compile(r"([A-Za-z])\s*([+-]?\d*\.?\d+)")
 
 # Yoklanacak COM metotlari (ad -> zorunlu mu)
+# Imzalar gercek Mach3.exe'nin MFC dispatch map'inden STATIK okundu:
+#   JogOn(short eksen, short yon)   JogOff(short eksen)
+#   SetMachZero(short eksen)        IsEstop() -> short
+#   GetOEMDRO(short) -> double      SetOEMDRO(short, double)
+#   DoOEMButton(short)              Code(string)   LoadFile(string)
+# (StopJog diye bir metot YOKTUR; eski surumde bos yere yoklaniyordu.)
 COM_METOTLAR = {
     "GetOEMDRO": True, "SetOEMDRO": True, "Code": True,
     "DoOEMButton": True, "GetOEMLED": False, "IsMoving": False,
-    "LoadFile": False, "StopJog": False, "GetButtonState": False,
-    "Message": False,
+    "LoadFile": False, "Message": False,
     # Mach3 Reset (E-Stop) durumundayken SetOEMDRO SESSIZCE calismaz;
     # sifirlamanin gercekten olup olmadigini anlamak icin gerekir.
     "IsEstop": False,
+    # Mach3'un KENDI jog motoru
+    "JogOn": False, "JogOff": False,
+    "SetMachZero": False, "GetAbsPosition": False,
+    "IsLoading": False, "LoadRun": False,
+    "DoSpinCW": False, "DoSpinCCW": False, "DoSpinStop": False,
+    "GotoSafeZ": False, "GetRPM": False,
 }
+
+# Eksen adi -> Mach3 eksen numarasi (JogOn/JogOff/SetMachZero)
+EKSEN_NO = {"X": 0, "Y": 1, "Z": 2, "A": 3, "B": 4, "C": 5}
 
 
 class Mach3Hata(Exception):
@@ -288,14 +303,41 @@ class _Mach3Nesne:
     def IsMoving(self):
         return self._c("IsMoving")
 
-    def StopJog(self):
-        return self._c("StopJog")
-
     def Message(self, metin):
         return self._c("Message", str(metin))
 
     def IsEstop(self):
         return self._c("IsEstop")
+
+    def JogOn(self, eksen, yon):
+        return self._c("JogOn", int(eksen), int(yon))
+
+    def JogOff(self, eksen):
+        return self._c("JogOff", int(eksen))
+
+    def SetMachZero(self, eksen):
+        return self._c("SetMachZero", int(eksen))
+
+    def GetAbsPosition(self, eksen):
+        return self._c("GetAbsPosition", int(eksen))
+
+    def IsLoading(self):
+        return self._c("IsLoading")
+
+    def GetRPM(self):
+        return self._c("GetRPM")
+
+    def DoSpinCW(self):
+        return self._c("DoSpinCW")
+
+    def DoSpinCCW(self):
+        return self._c("DoSpinCCW")
+
+    def DoSpinStop(self):
+        return self._c("DoSpinStop")
+
+    def GotoSafeZ(self):
+        return self._c("GotoSafeZ")
 
 
 # ----------------------------------------------------------------------
@@ -465,6 +507,12 @@ def _kelimeler(satir):
 # Ortak arayuz
 # ======================================================================
 class TemelBaglanti:
+    """Mach3 (ya da sanal makine) ile konusan arka ucun ortak arayuzu.
+
+    Oncelik kurali: DURDURMA komutlari (`dugme_acil`, `jog_kapat`) hicbir
+    okuma ya da hareket komutunun arkasinda BEKLEMEZ.
+    """
+
     tur = "temel"
 
     def __init__(self, ayar=None):
@@ -499,6 +547,10 @@ class TemelBaglanti:
     def dugme(self, kod):
         raise NotImplementedError
 
+    def dugme_acil(self, kod):
+        """Durdurma dugmesi: kuyruktaki isleri atlayip hemen gider."""
+        return self.dugme(kod)
+
     def kod(self, satir):
         """MDI satiri gonderir (Mach3 `Code`)."""
         raise NotImplementedError
@@ -506,15 +558,62 @@ class TemelBaglanti:
     def dosya_yukle(self, yol):
         raise NotImplementedError
 
-    def hareket_ediyor(self):
-        raise NotImplementedError
+    def yukleniyor(self):
+        """Mach3 bir dosyayi hala yukluyor mu? Bilinmiyorsa None."""
+        return None
 
-    def jog_durdur(self):
+    def hareket_ediyor(self):
         raise NotImplementedError
 
     def estop(self):
         """Mach3 Reset/E-Stop durumunda mi? Bilinmiyorsa None."""
         return None
+
+    # -- Mach3'un kendi jog motoru ----------------------------------------
+    def jog_ac(self, eksen_no, yon_degeri):
+        raise Mach3Hata("Bu baglantida Mach3 yerel jog (JogOn) yok")
+
+    def jog_kapat(self, eksen_no):
+        raise Mach3Hata("Bu baglantida Mach3 yerel jog (JogOff) yok")
+
+    def makine_sifir(self, eksen_no):
+        raise Mach3Hata("Bu baglantida SetMachZero yok")
+
+    # -- toplu okuma --------------------------------------------------------
+    def paket_oku(self, dro_kodlari=(), led_kodlari=()):
+        """Birden cok DRO/LED'i TEK turda okur.
+
+        Doner: {"dro": {kod: deger|None}, "led": {kod: bool|None},
+                "hareket": bool|None, "estop": bool|None}
+        Tek tek okunamayan kod None olur; HICBIR DRO okunamiyorsa baglanti
+        kopmus demektir ve Mach3Hata atilir.
+        """
+        s = {"dro": {}, "led": {}, "hareket": None, "estop": None}
+        hata, son = 0, None
+        for k in dro_kodlari:
+            try:
+                s["dro"][k] = float(self.dro(k))
+            except Exception as e:                    # noqa: BLE001
+                s["dro"][k] = None
+                hata += 1
+                son = e
+        if dro_kodlari and hata == len(dro_kodlari):
+            raise Mach3Hata(f"DRO okunamiyor: {son}")
+        for k in led_kodlari:
+            try:
+                v = self.led(k)
+                s["led"][k] = None if v is None else bool(v)
+            except Exception:                         # noqa: BLE001
+                s["led"][k] = None
+        try:
+            s["hareket"] = self.hareket_ediyor()
+        except Exception:                             # noqa: BLE001
+            s["hareket"] = None
+        try:
+            s["estop"] = self.estop()
+        except Exception:                             # noqa: BLE001
+            s["estop"] = None
+        return s
 
     def referansli(self):
         """Makine koordinati tezgahin sifirina gore mi?
@@ -531,12 +630,18 @@ class TemelBaglanti:
 # COM (gercek Mach3)
 # ======================================================================
 class _Isci(threading.Thread):
-    """COM nesnesinin sahibi olan tek is parcacigi. Tum cagrilar buradan."""
+    """COM nesnesinin sahibi olan tek is parcacigi. Tum cagrilar buradan.
+
+    Kuyruk ONCELIKLIDIR: oncelik 0 (durdurma) her zaman oncelik 1'den (okuma,
+    hareket) once calisir. Aksi halde acil durdurma, 10 Hz'lik okuma
+    yiginin arkasinda beklerdi.
+    """
 
     def __init__(self, kur):
         super().__init__(daemon=True, name="mach3-com")
         self._kur = kur                 # () -> COM nesnesi
-        self._kuyruk = queue.Queue()
+        self._kuyruk = queue.PriorityQueue()
+        self._sayac = itertools.count()
         self._dur = threading.Event()
         self.nesne = None
         self.hazir = threading.Event()
@@ -557,10 +662,9 @@ class _Isci(threading.Thread):
 
         while not self._dur.is_set():
             try:
-                is_ = self._kuyruk.get(timeout=0.2)
+                _, _, fn, args, kutu, olay = self._kuyruk.get(timeout=0.2)
             except queue.Empty:
                 continue
-            fn, args, kutu, olay = is_
             try:
                 kutu.append(fn(self.nesne, *args))
             except Exception as e:                    # noqa: BLE001
@@ -572,11 +676,11 @@ class _Isci(threading.Thread):
         except Exception:                             # noqa: BLE001
             pass
 
-    def cagir(self, fn, *args, zaman_asimi=5.0):
+    def cagir(self, fn, *args, zaman_asimi=5.0, oncelik=1):
         if not self.is_alive():
             raise Mach3Hata("COM is parcacigi calismiyor")
         kutu, olay = [], threading.Event()
-        self._kuyruk.put((fn, args, kutu, olay))
+        self._kuyruk.put((oncelik, next(self._sayac), fn, args, kutu, olay))
         if not olay.wait(zaman_asimi):
             raise Mach3Hata("Mach3 yanit vermedi (zaman asimi)")
         sonuc = kutu[0]
@@ -729,6 +833,10 @@ class COMBaglanti(TemelBaglanti):
     def dugme(self, kod):
         self._isci.cagir(lambda o, k: o.DoOEMButton(int(k)), kod)
 
+    def dugme_acil(self, kod):
+        self._isci.cagir(lambda o, k: o.DoOEMButton(int(k)), kod,
+                         zaman_asimi=2.0, oncelik=0)
+
     def kod(self, satir):
         self._isci.cagir(lambda o, s: o.Code(s), str(satir))
 
@@ -738,16 +846,15 @@ class COMBaglanti(TemelBaglanti):
                 "Bu Mach3 surumunde LoadFile yok; dosyayi Mach3'te elle acin.")
         self._isci.cagir(lambda o, y: o.LoadFile(y), str(yol), zaman_asimi=30)
 
+    def yukleniyor(self):
+        if not self.destekler("IsLoading"):
+            return None
+        return bool(self._isci.cagir(lambda o: o.IsLoading()))
+
     def hareket_ediyor(self):
         if not self.destekler("IsMoving"):
             return None
         return bool(self._isci.cagir(lambda o: o.IsMoving()))
-
-    def jog_durdur(self):
-        if self.destekler("StopJog"):
-            self._isci.cagir(lambda o: o.StopJog())
-            return True
-        return False
 
     def estop(self):
         if not self.destekler("IsEstop"):
@@ -757,249 +864,61 @@ class COMBaglanti(TemelBaglanti):
         except Exception:                             # noqa: BLE001
             return None
 
+    # -- Mach3 yerel jog ---------------------------------------------------
+    def jog_ac(self, eksen_no, yon_degeri):
+        if not (self.destekler("JogOn") and self.destekler("JogOff")):
+            raise Mach3Hata("Bu Mach3 surumunde JogOn/JogOff yok")
+        self._isci.cagir(lambda o, e, y: o.JogOn(e, y), int(eksen_no),
+                         int(yon_degeri), zaman_asimi=2.0, oncelik=0)
 
-# ======================================================================
-# Simulasyon (Mach3 olmadan)
-# ======================================================================
-class SimulasyonBaglanti(TemelBaglanti):
-    """Basit ama gercekci bir sanal tezgah.
+    def jog_kapat(self, eksen_no):
+        if not self.destekler("JogOff"):
+            raise Mach3Hata("Bu Mach3 surumunde JogOff yok")
+        self._isci.cagir(lambda o, e: o.JogOff(e), int(eksen_no),
+                         zaman_asimi=2.0, oncelik=0)
 
-    * G0/G1/G2/G3 hareketlerini besleme hizinda ilerletir (50 Hz tik).
-    * G90/G91, G4 (bekleme), M3/M5 ve F/S modal degerlerini takip eder.
-    * Feed hold / stop / jog durdur davranislari gercek makinedeki gibidir.
-    """
+    def makine_sifir(self, eksen_no):
+        if not self.destekler("SetMachZero"):
+            raise Mach3Hata("Bu Mach3 surumunde SetMachZero yok")
+        self._isci.cagir(lambda o, e: o.SetMachZero(e), int(eksen_no))
 
-    tur = "simulasyon"
+    # -- toplu okuma: tek COM turu -------------------------------------------
+    def paket_oku(self, dro_kodlari=(), led_kodlari=()):
+        dro_kodlari, led_kodlari = tuple(dro_kodlari), tuple(led_kodlari)
 
-    def __init__(self, ayar=None, makine=None):
-        super().__init__(ayar)
-        mak = makine or {}
-        self.hizli = mak.get("hizli_hiz", {"X": 8000.0, "Y": 8000.0, "Z": 3000.0})
-        self.konum = {"X": 0.0, "Y": 0.0, "Z": 0.0, "A": 0.0}     # makine
-        self.ofset = {"X": 0.0, "Y": 0.0, "Z": 0.0, "A": 0.0}     # is = makine - ofset
-        self.feed = 1000.0
-        self.devir = 0.0
-        self.spindle = False
-        self.mutlak = True
-        self.duraklatildi = False
-        self._kuyruk = []          # bekleyen hareketler
-        self._kilit = threading.RLock()
-        self._dur = threading.Event()
-        self._is = None
-        self.yuklu_dosya = ""
-        self._program_satirlari = []
-        self._bekle_bitis = 0.0
-        self._yetenek = {ad: True for ad in COM_METOTLAR}
+        def _is(o):
+            s = {"dro": {}, "led": {}, "hareket": None, "estop": None}
+            hata, son = 0, None
+            for k in dro_kodlari:
+                try:
+                    s["dro"][k] = float(o.GetOEMDRO(int(k)))
+                except Exception as e:                # noqa: BLE001
+                    s["dro"][k] = None
+                    hata += 1
+                    son = e
+            if dro_kodlari and hata == len(dro_kodlari):
+                raise Mach3Hata(f"DRO okunamiyor: {son}")
+            if o.var("GetOEMLED"):
+                for k in led_kodlari:
+                    try:
+                        s["led"][k] = bool(o.GetOEMLED(int(k)))
+                    except Exception:                 # noqa: BLE001
+                        s["led"][k] = None
+            else:
+                s["led"] = {k: None for k in led_kodlari}
+            if o.var("IsMoving"):
+                try:
+                    s["hareket"] = bool(o.IsMoving())
+                except Exception:                     # noqa: BLE001
+                    pass
+            if o.var("IsEstop"):
+                try:
+                    s["estop"] = bool(o.IsEstop())
+                except Exception:                     # noqa: BLE001
+                    pass
+            return s
 
-    # -- yasam dongusu ---------------------------------------------------
-    def ac(self):
-        self.bagli = True
-        self._dur.clear()
-        self._is = threading.Thread(target=self._dongu, daemon=True,
-                                    name="mach3-sim")
-        self._is.start()
-        return True
-
-    def kapat(self):
-        self.bagli = False
-        self._dur.set()
-
-    # -- hareket motoru --------------------------------------------------
-    def _dongu(self):
-        son = time.time()
-        while not self._dur.is_set():
-            time.sleep(0.02)
-            simdi = time.time()
-            dt, son = simdi - son, simdi
-            with self._kilit:
-                if self.duraklatildi or not self._kuyruk:
-                    continue
-                if simdi < self._bekle_bitis:
-                    continue
-                hedef, feed = self._kuyruk[0]
-                kalan = {e: hedef[e] - self.konum[e] for e in hedef}
-                uzak = math.sqrt(sum(v * v for v in kalan.values()))
-                if uzak < 1e-6:
-                    self._kuyruk.pop(0)
-                    continue
-                adim = max(feed, 1.0) / 60.0 * dt          # mm/dk -> mm/s
-                if adim >= uzak:
-                    for e in hedef:
-                        self.konum[e] = hedef[e]
-                    self._kuyruk.pop(0)
-                else:
-                    k = adim / uzak
-                    for e in hedef:
-                        self.konum[e] += kalan[e] * k
-
-    def _hedef_ekle(self, hedef, feed):
-        with self._kilit:
-            self._kuyruk.append((hedef, feed))
-
-    # -- islemler --------------------------------------------------------
-    def _eksen_kod(self, kod):
-        """DRO kodundan (eksen, makine_mi) cozer."""
-        harita = {800: ("X", False), 801: ("Y", False), 802: ("Z", False),
-                  803: ("A", False), 83: ("X", True), 84: ("Y", True),
-                  85: ("Z", True), 86: ("A", True)}
-        return harita.get(int(kod))
-
-    def dro(self, kod):
-        kod = int(kod)
-        e = self._eksen_kod(kod)
-        if e:
-            eksen, makine = e
-            with self._kilit:
-                return round(self.konum[eksen] -
-                             (0.0 if makine else self.ofset[eksen]), 4)
-        if kod == 818:
-            return self.feed
-        if kod in (821, 822):
-            return 100.0
-        if kod == 812:
-            return self.devir
-        if kod == 39:
-            return self.devir if self.spindle else 0.0
-        return 0.0
-
-    def dro_yaz(self, kod, deger):
-        e = self._eksen_kod(int(kod))
-        if e:
-            eksen, makine = e
-            with self._kilit:
-                if makine:
-                    self.konum[eksen] = float(deger)
-                else:
-                    # is koordinati `deger` olacak sekilde ofseti kaydir
-                    self.ofset[eksen] = self.konum[eksen] - float(deger)
-            return
-        if int(kod) == 818:
-            self.feed = float(deger)
-        elif int(kod) == 812:
-            self.devir = float(deger)
-
-    def led(self, kod):
-        return False
-
-    def dugme(self, kod):
-        kod = int(kod)
-        if kod == 1001:                     # feed hold
-            self.duraklatildi = True
-        elif kod == 1000:                   # cycle start
-            self.duraklatildi = False
-            self._programi_kuyrukla()       # yuklu dosya varsa calistir
-        elif kod == 1002:                   # stop
-            self.duraklatildi = False
-            with self._kilit:
-                self._kuyruk.clear()
-        elif kod in (131, 132, 133, 134):   # zero X/Y/Z/A (is sifiri)
-            eksen = {131: "X", 132: "Y", 133: "Z", 134: "A"}[kod]
-            with self._kilit:
-                self.ofset[eksen] = self.konum[eksen]
-        elif kod in (22, 23, 24, 25, 1024):  # Ref (MAKINE sifiri)
-            # Home switch'i olmayan kurulum taklit edilir: eksen hareket
-            # etmez, makine koordinati bulunulan noktada sifirlanir. Is
-            # ofseti makineye gore sakli oldugu icin is DRO'su da kayar -
-            # Mach3'teki davranisin aynisi.
-            eksenler = ({22: ["X"], 23: ["Y"], 24: ["Z"], 25: ["A"]}
-                        .get(kod, ["X", "Y", "Z", "A"]))
-            with self._kilit:
-                for eksen in eksenler:
-                    self.ofset[eksen] -= self.konum[eksen]
-                    self.konum[eksen] = 0.0
-
-    def kod(self, satir):
-        """Cok satirli MDI destegi (satir satir yorumlanir)."""
-        for parca in str(satir).replace("\r", "").split("\n"):
-            self._satir_isle(parca)
-
-    def _satir_isle(self, satir):
-        w = _kelimeler(satir)
-        if not w:
-            return
-        if "G" in w:
-            g = w["G"]
-            if g == 90:
-                self.mutlak = True
-            elif g == 91:
-                self.mutlak = False
-            elif g == 4:
-                sn = w.get("P", 0.0)
-                with self._kilit:
-                    self._bekle_bitis = time.time() + (
-                        sn if sn < 100 else sn / 1000.0)
-                return
-        if "M" in w:
-            m = int(w["M"])
-            if m in (3, 4):
-                self.spindle = True
-                if "S" in w:
-                    self.devir = w["S"]
-            elif m == 5:
-                self.spindle = False
-        if "F" in w:
-            self.feed = w["F"]
-        if "S" in w:
-            self.devir = w["S"]
-
-        eksenli = [e for e in ("X", "Y", "Z", "A") if e in w]
-        if not eksenli:
-            return
-        g = w.get("G")
-        hizli = (g == 0)
-        with self._kilit:
-            hedef = dict(self.konum)
-            for e in eksenli:
-                if self.mutlak:
-                    hedef[e] = w[e] + self.ofset[e]
-                else:
-                    hedef[e] = self.konum[e] + w[e]
-        feed = (min(self.hizli.get(e, 6000.0) for e in eksenli)
-                if hizli else self.feed)
-        self._hedef_ekle(hedef, feed)
-
-    def dosya_yukle(self, yol):
-        """Dosyayi yukler ve satirlarini cycle start icin hazir tutar.
-
-        Onceden yalnizca dosya ADI saklaniyordu; bu yuzden simulasyonda
-        "program calistir" hicbir sey hareket ettirmiyordu ve sure/ilerleme
-        gibi olculer yalnizca gercek makinede denenebiliyordu. Artik
-        simulasyon programi gercekten isliyor.
-        """
-        self.yuklu_dosya = str(yol)
-        self._program_satirlari = []
-        try:
-            with open(yol, "r", encoding="utf-8", errors="replace") as f:
-                self._program_satirlari = [s for s in f.read().splitlines()
-                                           if s.strip()]
-        except OSError:
-            pass
-
-    def _programi_kuyrukla(self):
-        satirlar = getattr(self, "_program_satirlari", None)
-        if not satirlar:
-            return False
-        for s in satirlar:
-            self._satir_isle(s)
-        self._program_satirlari = []      # tek seferlik
-        return True
-
-    def hareket_ediyor(self):
-        with self._kilit:
-            return bool(self._kuyruk) and not self.duraklatildi
-
-    def jog_durdur(self):
-        with self._kilit:
-            self._kuyruk.clear()
-        return True
-
-    def estop(self):
-        return False                      # sanal tezgah her zaman hazir
-
-    def referansli(self):
-        # Sanal tezgahin makine koordinati 0'dan baslar ve tezgah sifiriyla
-        # ayni yerdedir; ayrica referans almaya gerek yoktur.
-        return True
+        return self._isci.cagir(_is)
 
 
 # ======================================================================
@@ -1013,4 +932,13 @@ def baglanti_olustur(ayarlar):
         tur = "com" if platform.system() == "Windows" else "simulasyon"
     if tur == "com":
         return COMBaglanti(b_ayar)
-    return SimulasyonBaglanti(b_ayar, ayarlar["makine"])
+    from .sanal_makine import SimulasyonBaglanti
+    return SimulasyonBaglanti(b_ayar, ayarlar["makine"], ayarlar.get("jog"))
+
+
+def __getattr__(ad):
+    """`baglanti.SimulasyonBaglanti` eski adi: dairesel ice aktarimi onler."""
+    if ad == "SimulasyonBaglanti":
+        from .sanal_makine import SimulasyonBaglanti
+        return SimulasyonBaglanti
+    raise AttributeError(ad)

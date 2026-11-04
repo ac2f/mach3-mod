@@ -17,7 +17,7 @@ import copy
 import json
 import os
 
-SURUM = 5
+SURUM = 6
 
 VARSAYILAN = {
     "surum": SURUM,
@@ -54,6 +54,40 @@ VARSAYILAN = {
         "g10_fikstur": 1,
     },
 
+    # ------------------------------------------------------------------
+    # JOG (Mach3'un kendi modeli)
+    #   mod          : "surekli" (Continuous) | "adim" (Step)
+    #   yavas_yuzde  : Slow Jog Rate %  -> hiz = yuzde x eksen azami hizi
+    #   hizli_yuzde  : Shift basiliyken kullanilan yuzde (Mach3'te %100)
+    #   adim         : Step kipinde bir basista gidilen mesafe (mm)
+    #   adim_listesi : "Cycle Jog Step" dugmesinin dolastigi degerler
+    #                  (Mach3 profilindeki JogInc0..4 gibi)
+    #   adim_kuyrugu : Step kipinde hareket surerken kuyruga alinabilecek
+    #                  basis sayisi (Mach3 profilinde IncBuffer=5)
+    #   surucu       : "artimli" -> Mach3'e MDI ile kisa hedefler zincirlenir
+    #                  (her Mach3 surumunde calisir, VARSAYILAN)
+    #                  "mach3"   -> Mach3'un KENDI jog motoru (JogOn/JogOff);
+    #                  yalnizca "Jog dogrulama" basariyla bittiyse kullanilir
+    #   yon_esleme   : JogOn(eksen, yon) yon degerlerinin hangi isarete denk
+    #                  geldigi; Jog dogrulama ile OGRENILIR (X ters olabilir)
+    #   tik_ms       : zincirin kontrol periyodu
+    #   ileri_sn     : zincirin Mach3 kuyruguna tuttugu en az ileri sure
+    "jog": {
+        "acik": True,
+        "mod": "surekli",
+        "yavas_yuzde": 20.0,
+        "hizli_yuzde": 100.0,
+        "adim": 1.0,
+        "adim_listesi": [10.0, 1.0, 0.1, 0.01, 0.001],
+        "adim_kuyrugu": 5,
+        "surucu": "artimli",
+        "mach3_dogrulandi": False,
+        "yon_esleme": {},
+        "tik_ms": 40,
+        "ileri_sn": 0.30,
+        "durma_beklemesi_sn": 1.5,
+    },
+
     "guvenlik": {
         # ---------------------------------------------------------------
         # TEZGAH REFERANSI
@@ -84,24 +118,19 @@ VARSAYILAN = {
         "max_surekli_jog_sn": 30.0,     # surekli jog en fazla bu kadar surer
         "jog_kalp_atisi_ms": 400,       # istemciden bu araliktan seyrek gelirse dur
 
-        # --------------------------------------------------------------
-        # SUREKLI JOG'UN HISSIYATI (Mach3'e yakin tepkisellik icin)
-        # Mach3'un COM arayuzunde gercek bir "surekli jog" cagrisi yoktur;
-        # hareket, kisa artimli adimlarin ZINCIRLENMESIYLE uretilir. Akici
-        # olmasi icin her adim, bir sonraki gelene kadar bitmemelidir:
-        #     adim_mm = feed/60 * tik * ortusme        (ortusme > 1)
-        # Ortusme buyudukce hareket akici ama birakinca sonlanma mesafesi
-        # uzun olur; kucuk oldugunda eksen adimlar arasinda "tik tik" durur.
-        "jog_yavas_feed": 600.0,        # yon tusu / dokunma: hassas jog
-        "jog_hizli_feed": 4000.0,       # Shift + yon tusu: hizli jog
-        "jog_tik_ms": 80,               # zincirdeki adim araligi (ms)
-        "jog_ortusme": 1.35,            # adim uzunlugu carpani (>1)
-        # Birakinca Mach3'un Feed Hold + Stop'u ile kuyrugu bosalt. Kapali
-        # ise eksen, kuyrukta kalan son adimi tamamlayana kadar surer.
-        "jog_birakinca_durdur": True,
+        # Jog'un kendisi (kip, Slow Jog %, Step artimi, surucu) artik ayri
+        # "jog" bolumundedir; burada yalnizca GUVENLIK sinirlari kalir.
+        # ACIL DURDUR: Feed Hold + Stop'tan sonra Mach3'un Reset'ine de
+        # basilsin mi? (Mach3'te Esc = Reset.) Reset zaten E-Stop'taysa
+        # ASLA basilmaz - Reset bir tersleme dugmesidir, tekrar basmak
+        # E-Stop'u kaldirirdi.
+        "acil_reset": True,
+        # Program mm'de calisir. Mach3 G20 (inc) kipinde acilmissa her
+        # harekette G21 zorlanir; yoksa "G1 X10" 254 mm giderdi.
+        "birim_zorla_mm": True,
 
         "guvenli_z": 20.0,              # XY hareketi oncesi olmasi gereken Z
-        "guvenli_z_zorunlu": True,      # XY tasima once Z'yi guvenli yuksekli§e al
+        "guvenli_z_zorunlu": True,      # XY tasima once Z'yi guvenli yukseklige al
         # IS koordinatinda elle inis siniri (is sifirina gore degerlendirilir)
         "max_dalis_derinlik": -60.0,
         # TEZGAH koordinatinda (referansa gore) mutlak Z tabani. Is sifirini
@@ -241,6 +270,20 @@ def _gocur(veri):
         g = veri.setdefault("guvenlik", {})
         if float(g.get("jog_kalp_atisi_ms", 400)) > 400:
             g["jog_kalp_atisi_ms"] = 400
+    if surum < 6:
+        # Surum 6: jog yeniden yazildi (Mach3 modeli: kip, Slow Jog %, Step).
+        # Eski mm/dk cinsinden "yavas jog" degerini yuzdeye cevir; Shift
+        # artik her zaman %100 (Mach3 gibi). Eski anahtarlar silinir.
+        g = veri.setdefault("guvenlik", {})
+        hiz = ((veri.get("makine") or {}).get("hizli_hiz") or {}).get("X", 8000.0)
+        eski = g.pop("jog_yavas_feed", None)
+        for ad in ("jog_hizli_feed", "jog_tik_ms", "jog_ortusme",
+                   "jog_birakinca_durdur"):
+            g.pop(ad, None)
+        j = veri.setdefault("jog", {})
+        if eski and hiz and "yavas_yuzde" not in j:
+            j["yavas_yuzde"] = round(min(max(float(eski) / float(hiz) * 100.0,
+                                             1.0), 100.0), 1)
     veri["surum"] = SURUM
     return True, veri
 

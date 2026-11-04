@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Mach3-Kontrol</title>
 <link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="/mach3.css">
 </head>
 <body>
 
@@ -17,12 +18,12 @@
     <div class="logo">M3</div>
     <div class="marka-yazi">
       <div class="ad">Mach3-Kontrol</div>
-      <div class="alt" id="altBaslik">baglanti bekleniyor…</div>
+      <div class="alt" id="altBaslik">bağlantı bekleniyor…</div>
     </div>
   </div>
 
   <div class="ust-orta">
-    <span class="cip" id="cipBaglanti">● baglanti yok</span>
+    <span class="cip" id="cipBaglanti">● bağlantı yok</span>
     <span class="cip" id="cipKontrol">kontrol: serbest</span>
     <span class="cip gizli" id="cipKilit">⌨ kilit</span>
   </div>
@@ -38,14 +39,14 @@
 
 <!-- ================= SEKMELER ================= -->
 <nav class="sekmeler" id="sekmeler">
-  <button class="sekme aktif" data-sekme="tezgah">Tezgah</button>
-  <button class="sekme" data-sekme="kontrol">Kontrol</button>
-  <button class="sekme" data-sekme="program">Program &amp; Sira</button>
+  <button class="sekme aktif" data-sekme="tezgah">Mach3</button>
+  <button class="sekme" data-sekme="ofsetler">Ofsetler</button>
+  <button class="sekme" data-sekme="program">Program &amp; Sıra</button>
   <button class="sekme" data-sekme="rapor">Rapor</button>
   <button class="sekme" data-sekme="kalibrasyon">Kalibrasyon</button>
-  <button class="sekme" data-sekme="guvenlik">Guvenlik</button>
+  <button class="sekme" data-sekme="guvenlik">Güvenlik</button>
   <button class="sekme" data-sekme="ayarlar">Ayarlar</button>
-  <button class="sekme" data-sekme="gunluk">Gunluk</button>
+  <button class="sekme" data-sekme="gunluk">Günlük</button>
 </nav>
 
 <!-- yeni dosya bulundu seridi -->
@@ -56,169 +57,234 @@
 
 <main class="govde">
 
-<!-- ========================================================= TEZGAH -->
-<!-- Tek ekran: koordinat + G-Code onizleme + kesim sirasi + sureler.
-     Klavye ile calisildigi icin dugmeler kucuk tutulmustur. -->
+<!-- ========================================================= MACH3 EKRANI -->
+<!-- Mach3'ün "Program Run" ekranının karşılığı: LED şeridi, sıfırla/REF'li
+     DRO'lar, jog paneli (Jog ON/OFF · Cont/Step · Slow Jog % · Step), G-Code
+     penceresi, takım yolu ve çalıştırma düğmeleri tek ekranda. -->
 <section class="sayfa aktif" id="sayfa-tezgah">
-  <div class="tezgah">
+  <div class="m3">
 
-    <!-- ---- ust serit: DRO + besleme ---- -->
-    <div class="t-ust">
-      <div class="t-dro" id="tDro"></div>
+    <!-- LED şeridi + durum satırı (Mach3'ün alt durum çubuğu) -->
+    <div class="m3-ledler" id="m3Ledler"></div>
+    <div class="m3-durum" id="m3Durum"><span>Hazır.</span></div>
 
-      <div class="t-yan">
-        <div class="t-taban" id="tTaban" title="Tezgah tabanina kalan mesafe">
+    <div class="m3-izgara">
+
+      <!-- ============ SOL: DRO + besleme + mil ============ -->
+      <div class="m3-panel m3-sol">
+        <div class="m3-baslik">KONUM <span class="m3-birim" id="m3Birim">mm</span></div>
+        <div class="m3-dro" id="tDro"></div>
+
+        <div class="t-taban" id="tTaban" title="Tezgâh tabanına kalan mesafe">
           <span class="etiket-kucuk">tabana kalan</span>
           <span class="deger" id="tTabanDeger">–</span>
         </div>
-        <div class="t-besleme">
-          <div class="t-fro">
-            <button class="mini" id="froAzalt" title="F10">−</button>
-            <div class="fro-orta">
-              <span class="fro-deger" id="tFro">–</span>
-              <span class="etiket-kucuk">besleme %</span>
-            </div>
-            <button class="mini" id="froArtir" title="F11">+</button>
+
+        <div class="m3-baslik alt">HOME <span class="m3-birim" id="homeDurum"></span></div>
+        <div class="m3-home">
+          <select id="homeSec" class="m3-giris" title="Home (adlandırılmış iş sıfırı)"></select>
+          <button class="m3-tus" id="homeUygula"
+                  title="Seçili Home'u iş sıfırı yap">Uygula</button>
+          <button class="m3-tus" id="homeUygulaGit"
+                  title="Uygula, sonra sıfıra git (önce güvenli Z)">Uygula + git</button>
+          <button class="m3-tus kucuk" id="homeKaydet"
+                  title="Mevcut iş sıfırını yeni Home olarak kaydet">+ Kaydet…</button>
+          <button class="m3-tus kucuk" id="homeYonet"
+                  title="Home'ları düzenle / sil (Ofsetler sekmesi)">Yönet</button>
+        </div>
+
+        <div class="m3-baslik alt">BESLEME</div>
+        <div class="m3-fro">
+          <button class="m3-tus kucuk" id="froAzalt" title="F10">−</button>
+          <div class="fro-orta">
+            <span class="fro-deger" id="tFro">–</span><span class="m3-yuzde">%</span>
+            <span class="etiket-kucuk">FRO</span>
           </div>
-          <div class="t-olcu">
-            <span>F <b id="tFeed">–</b></span>
-            <span>S <b id="tDevir">–</b></span>
-            <span class="etiket" id="tHareket">durgun</span>
+          <button class="m3-tus kucuk" id="froArtir" title="F11">+</button>
+          <button class="m3-tus kucuk" id="froSifirla" title="Besleme override'ı %100 yap">100</button>
+        </div>
+        <div class="m3-okuma">
+          <div><i>F</i><b id="tFeed">–</b><small>mm/dk</small></div>
+          <div><i>S</i><b id="tDevir">–</b><small>dev/dk</small></div>
+          <div><i>durum</i><b class="etiket" id="tHareket">durgun</b></div>
+        </div>
+
+        <div class="m3-baslik alt">MİL / SOĞUTMA</div>
+        <div class="m3-mil">
+          <button class="m3-tus" id="milCw" title="M3">Mil CW</button>
+          <button class="m3-tus" id="milCcw" title="M4">Mil CCW</button>
+          <button class="m3-tus tehlike-hafif" id="milDur" title="M5">Mil dur</button>
+          <input type="number" id="milDevir" class="m3-giris" min="0" max="100000"
+                 step="500" value="12000" title="Mil devri (S)">
+          <button class="m3-tus" id="sogSel" title="M8">Sel</button>
+          <button class="m3-tus" id="sogSis" title="M7">Sis</button>
+          <button class="m3-tus" id="sogKapat" title="M9">Soğ. kapat</button>
+        </div>
+      </div>
+
+      <!-- ============ ORTA: takım yolu + G-Code ============ -->
+      <div class="m3-orta">
+        <div class="m3-panel m3-yol">
+          <div class="m3-baslik">
+            <span id="tDosyaAd">Dosya yüklenmedi</span>
+            <span class="sag">
+              <button class="m3-tus kucuk" id="tGozat">Dosya aç…</button>
+            </span>
+          </div>
+          <div class="onizleme" id="onizlemeMini">
+            <div class="bos-mesaj">Dosya seçin; takım yolu ve kesim sırası burada görünür.</div>
+          </div>
+          <div class="olcu-serit" id="olcuSeritMini"></div>
+        </div>
+
+        <div class="m3-altlar">
+          <div class="m3-panel m3-gkod-kap">
+            <div class="m3-baslik">G-CODE <span class="m3-birim" id="gkodBilgi"></span></div>
+            <div class="m3-gkod" id="gkod"><div class="bos-mesaj">Program yok.</div></div>
+          </div>
+          <div class="m3-panel m3-sira-kap">
+            <div class="m3-baslik">KESİM SIRASI <span class="m3-birim" id="tBlokSayi"></span></div>
+            <div class="blok-liste" id="blokListeMini"></div>
+            <div class="t-sure" id="tSure">–</div>
           </div>
         </div>
-        <div class="t-profil">
-          <select id="tProfil" class="alan dar" title="Is sifiri profili"></select>
-          <button class="mini" id="tProfilUygula" title="Secili profili yukle">yukle</button>
-          <button class="mini" id="tProfilKaydet" title="Mevcut is sifirini kaydet">kaydet</button>
+      </div>
+
+      <!-- ============ SAĞ: JOG ============ -->
+      <div class="m3-panel m3-sag">
+        <div class="m3-baslik">JOG</div>
+
+        <div class="m3-jog-ust">
+          <button class="m3-tus led-tus" id="jogAcik" title="Jog ON/OFF (Tab)">
+            <i class="led"></i>Jog ON</button>
+          <div class="secim m3-secim" id="jogMod" title="Jog kipi (M)">
+            <button data-mod="surekli">Cont.</button>
+            <button data-mod="adim">Step</button>
+          </div>
         </div>
+
+        <div class="m3-kay">
+          <label for="jogYuzde">Slow Jog Rate</label>
+          <input type="range" id="jogYuzde" min="1" max="100" step="1">
+          <span class="m3-yuzde-kutu"><input type="number" id="jogYuzdeSayi" min="0.1" max="100"
+                 step="1" class="m3-giris dar"> %</span>
+        </div>
+        <div class="m3-hizmetin" id="jogHizMetin">–</div>
+
+        <div class="m3-step">
+          <label for="jogAdim">Step</label>
+          <button class="m3-tus kucuk" id="jogAdimEksi" title="Önceki adım (,)">◀</button>
+          <input type="number" id="jogAdim" class="m3-giris" step="0.001" min="0.001">
+          <span class="m3-birim">mm</span>
+          <button class="m3-tus kucuk" id="jogAdimArti" title="Sonraki adım (.)">▶</button>
+        </div>
+        <div class="adimlar m3-adimlar" id="adimlar"></div>
+
+        <div class="jog-pad m3-pad">
+          <button class="jog bos"></button>
+          <button class="jog" data-eksen="Y" data-yon="1">Y+<small>↑</small></button>
+          <button class="jog bos"></button>
+          <button class="jog z" data-eksen="Z" data-yon="1">Z+<small>PgUp</small></button>
+
+          <button class="jog" data-eksen="X" data-yon="-1">X−<small>←</small></button>
+          <button class="jog shift" id="jogShift" title="Shift: hızlı jog (%100)">Shift<small>hızlı</small></button>
+          <button class="jog" data-eksen="X" data-yon="1">X+<small>→</small></button>
+          <button class="jog z" data-eksen="Z" data-yon="-1">Z−<small>PgDn</small></button>
+
+          <button class="jog bos"></button>
+          <button class="jog" data-eksen="Y" data-yon="-1">Y−<small>↓</small></button>
+          <button class="jog bos"></button>
+          <button class="jog guvenli" id="guvenliZBtn" title="Z'yi güvenli yüksekliğe çıkar">Z güvenli</button>
+        </div>
+
+        <div class="m3-jog-bilgi" id="jogBilgi">–</div>
+        <p class="m3-ipucu">
+          <kbd>←</kbd><kbd>→</kbd> X · <kbd>↑</kbd><kbd>↓</kbd> Y · <kbd>PgUp</kbd><kbd>PgDn</kbd> Z ·
+          <kbd>Shift</kbd> hızlı · <kbd>Tab</kbd> Jog ON/OFF · <kbd>M</kbd> kip ·
+          <kbd>,</kbd><kbd>.</kbd> step · <kbd>[</kbd><kbd>]</kbd> hız
+        </p>
       </div>
     </div>
 
-    <!-- ---- orta: onizleme + kesim sirasi ---- -->
-    <div class="t-orta">
-      <div class="t-onizleme">
-        <div class="t-baslik">
-          <span id="tDosyaAd">Dosya yuklenmedi</span>
-          <span class="sag">
-            <button class="mini" id="tGozat">Dosya sec…</button>
-          </span>
-        </div>
-        <div class="onizleme" id="onizlemeMini">
-          <div class="bos-mesaj">Dosya secin; takim yolu ve kesim sirasi
-            burada gorunur.</div>
-        </div>
-        <div class="olcu-serit" id="olcuSeritMini"></div>
-      </div>
-
-      <div class="t-sira">
-        <div class="t-baslik"><span>Kesim sirasi</span>
-          <span class="sag ipucu-kucuk" id="tBlokSayi"></span></div>
-        <div class="blok-liste" id="blokListeMini"></div>
-        <div class="t-sure" id="tSure">–</div>
-      </div>
-    </div>
-
-    <!-- ---- alt: ilerleme + kontrol ---- -->
-    <div class="t-alt">
+    <!-- ============ ALT: ilerleme + çalıştırma ============ -->
+    <div class="m3-panel m3-alt">
       <div class="t-ilerleme">
         <div class="cubuk"><div class="dolgu" id="tDolgu"></div></div>
         <div class="t-sayac">
-          <span>gecen <b id="tGecen">–</b></span>
+          <span>geçen <b id="tGecen">–</b></span>
           <span>kalan <b id="tKalan">–</b></span>
           <span>tahmini <b id="tTahmini">–</b></span>
           <span>yol <b id="tYol">–</b></span>
+          <span>satır <b id="tSatir">–</b></span>
         </div>
       </div>
-      <div class="t-dugmeler">
-        <button class="dugme kucuk" id="tDenetle">Denetim</button>
-        <button class="dugme basla kucuk" id="tBaslat" disabled>BASLAT</button>
-        <button class="dugme hayalet kucuk" id="tFeedHold">Feed hold</button>
-        <button class="dugme hayalet kucuk" id="tDevam">Devam</button>
-        <button class="dugme hayalet kucuk" id="tDurdur">Durdur</button>
+      <div class="m3-calistir">
+        <button class="m3-buyuk yesil" id="m3CycleStart" title="Cycle Start / devam">CYCLE START</button>
+        <button class="m3-buyuk sari" id="tFeedHold" title="Feed Hold (Space)">FEED HOLD</button>
+        <button class="m3-buyuk kirmizi" id="tDurdur" title="Stop">STOP</button>
+        <button class="m3-buyuk reset" id="m3Reset" title="Reset (E-Stop aç/kapa)">RESET</button>
+        <button class="m3-tus" id="m3Rewind" title="Programı başa sar">Rewind</button>
+        <button class="m3-tus led-tus" id="m3TekBlok" title="Single Block"><i class="led"></i>Single Blok</button>
+        <button class="m3-tus" id="tDenetle" title="Güvenlik denetimi">Denetim</button>
+        <button class="m3-tus yesil-hafif" id="tBaslat" disabled
+                title="Denetimden geçen programı seçili bloktan başlat">Seçili bloktan BAŞLAT</button>
+      </div>
+      <div class="m3-ikinci">
+        <button class="m3-tus kucuk" id="m3SifiraGit" title="X0 Y0'a dön (önce güvenli Z)">X0 Y0'a dön</button>
+        <span class="t-ipucu">
+          <kbd>Ctrl</kbd>+<kbd>X</kbd>/<kbd>Y</kbd>/<kbd>Z</kbd> DRO yaz ·
+          <kbd>F10</kbd>/<kbd>F11</kbd> besleme · <kbd>Space</kbd> feed hold ·
+          <kbd>Esc</kbd> ACİL DURDUR <span id="tCtrlNot"></span>
+        </span>
       </div>
     </div>
 
-    <div class="t-ipucu">
-      <kbd>Ctrl</kbd>+<kbd>X</kbd>/<kbd>Y</kbd>/<kbd>Z</kbd> DRO yaz ·
-      <kbd>F10</kbd>/<kbd>F11</kbd> besleme ·
-      <kbd>Space</kbd> feed hold · <kbd>Esc</kbd> acil durdur
-      <span id="tCtrlNot"></span>
+    <!-- ============ MDI ============ -->
+    <div class="m3-panel m3-mdi">
+      <div class="m3-baslik">MDI <span class="m3-birim">gönderilmeden önce yumuşak limitlere göre denetlenir</span></div>
+      <div class="m3-mdi-satir">
+        <input type="text" id="mdiSatir" class="m3-giris genis" placeholder="G0 X100 Y50"
+               autocomplete="off" spellcheck="false">
+        <button class="m3-tus" id="mdiBtn">Gönder</button>
+      </div>
+      <div class="mdi-gecmis" id="mdiGecmis"></div>
     </div>
   </div>
 </section>
 
-<!-- ========================================================= KONTROL -->
-<section class="sayfa" id="sayfa-kontrol">
-
+<!-- ========================================================= OFSETLER -->
+<section class="sayfa" id="sayfa-ofsetler">
   <div class="izgara">
 
-    <!-- DRO -->
-    <div class="kart dro-kart">
-      <div class="kart-bas">
-        <h2>Konum</h2>
-        <div class="kart-bas-sag">
-          <span class="etiket" id="hareketRozet">durgun</span>
-        </div>
-      </div>
-      <div class="dro" id="dro"></div>
-      <div class="dro-alt">
-        <span>Besleme: <b id="droFeed">–</b> mm/dk</span>
-        <span>FRO: <b id="droFro">–</b>%</span>
-        <span>Devir: <b id="droDevir">–</b></span>
-      </div>
+    <!-- TEZGAH REFERANSI + PROFİLLER -->
+    <div class="kart">
+      <div class="kart-bas"><h2>Tezgâh referansı</h2></div>
+      <p class="ipucu">
+        Yumuşak limitler <b>tezgâh koordinatına</b> göre denetlenir. Referans
+        switch'i olmayan makinede Mach3'ün makine sıfırı tezgâhın köşesi
+        değildir; kafanın şu anki yerini bildirmeniz gerekir.
+      </p>
+      <div class="satir"><button class="dugme genis" id="refAcBtn">Referansı bildir / düzelt…</button></div>
     </div>
 
-    <!-- JOG -->
-    <div class="kart">
+    <!-- HOME NOKTALARI: adlandırılmış iş sıfırları -->
+    <div class="kart genis-kart" id="homeKart">
       <div class="kart-bas">
-        <h2>Jog</h2>
-        <div class="secim" id="jogModu">
-          <button class="aktif" data-mod="adim">Adim</button>
-          <button data-mod="surekli">Basili tut</button>
-        </div>
-      </div>
-
-      <div class="adimlar" id="adimlar"></div>
-
-      <div class="jog-pad">
-        <button class="jog bos"></button>
-        <button class="jog" data-eksen="Y" data-yon="1">Y+</button>
-        <button class="jog bos"></button>
-        <button class="jog" data-eksen="Z" data-yon="1">Z+</button>
-
-        <button class="jog" data-eksen="X" data-yon="-1">X−</button>
-        <button class="jog orta" id="jogDur">DUR</button>
-        <button class="jog" data-eksen="X" data-yon="1">X+</button>
-        <button class="jog" data-eksen="Z" data-yon="-1">Z−</button>
-
-        <button class="jog bos"></button>
-        <button class="jog" data-eksen="Y" data-yon="-1">Y−</button>
-        <button class="jog bos"></button>
-        <button class="jog guvenli" id="guvenliZBtn" title="Guvenli yukseklige cik">↑ Z guvenli</button>
-      </div>
-
-      <div class="jog-hiz">
-        <div class="satir">
-          <label>Yavas jog <span class="tus-not">yon tusu</span></label>
-          <input type="number" id="jogYavas" class="alan dar" min="1" step="50">
-          <span class="birim">mm/dk</span>
-        </div>
-        <div class="satir">
-          <label>Hizli jog <span class="tus-not"><kbd>Shift</kbd>+yon</span></label>
-          <input type="number" id="jogHizli" class="alan dar" min="1" step="100">
-          <span class="birim">mm/dk</span>
-        </div>
-        <div class="satir">
-          <button class="dugme hayalet kucuk" id="jogHizKaydet">Hizlari kaydet</button>
-          <span class="jog-rozet gizli" id="jogRozet">JOG</span>
+        <h2>Home noktaları</h2>
+        <div class="kart-bas-sag">
+          <span class="ipucu-kucuk" id="homeMevcut"></span>
+          <button class="dugme kucuk" id="homeYeniBtn">+ Mevcut sıfırı Home olarak kaydet…</button>
         </div>
       </div>
       <p class="ipucu">
-        <b>Yon tuslari</b> yavas, <b><kbd>Shift</kbd>+yon</b> hizli jog yapar;
-        basili tutarken Shift'e basip birakmak hizi <b>aninda</b> degistirir.
-        Tusu/parmagi biraktiginiz an Mach3'e Feed Hold + Stop gonderilir,
-        eksen kuyrukta kalan adimi tamamlamadan durur.
+        Her <b>Home</b>, bir malzemenin ya da işin <b>sıfır noktasıdır</b>; takma
+        adla saklanır (örn. <i>Levha A</i>, <i>18 mm MDF – sağ üst</i>). Tezgâhın
+        farklı yerlerindeki farklı malzemeler için istediğiniz kadar Home
+        tanımlayıp tek tıkla geçiş yaparsınız. Home'lar <b>tezgâh koordinatıyla</b>
+        saklanır: Mach3'ü yeniden açıp referansı aldıktan sonra da her Home
+        tam aynı fiziksel noktaya döner.
       </p>
+      <div id="homeTablo" class="home-tablo"><div class="ipucu-kucuk">Henüz Home yok.</div></div>
     </div>
 
     <!-- HASSAS HAREKET -->
@@ -229,7 +295,7 @@
         <span class="eksen-adi">X</span>
         <button class="dugme hayalet kucuk" data-yon="-1">← sola</button>
         <input type="number" class="alan mesafe" value="10" step="0.1">
-        <button class="dugme hayalet kucuk" data-yon="1">saga →</button>
+        <button class="dugme hayalet kucuk" data-yon="1">sağa →</button>
       </div>
       <div class="olcu-satir" data-eksen="Y">
         <span class="eksen-adi">Y</span>
@@ -239,9 +305,9 @@
       </div>
       <div class="olcu-satir" data-eksen="Z">
         <span class="eksen-adi">Z</span>
-        <button class="dugme hayalet kucuk" data-yon="-1">↓ asagi</button>
+        <button class="dugme hayalet kucuk" data-yon="-1">↓ aşağı</button>
         <input type="number" class="alan mesafe" value="1" step="0.1">
-        <button class="dugme hayalet kucuk" data-yon="1">yukari ↑</button>
+        <button class="dugme hayalet kucuk" data-yon="1">yukarı ↑</button>
       </div>
 
       <div class="ayirac"></div>
@@ -253,35 +319,35 @@
         <input type="number" id="gitZ" class="alan" placeholder="Z">
       </div>
       <div class="satir">
-        <button class="dugme genis" id="gitBtn">Git (once guvenli Z)</button>
+        <button class="dugme genis" id="gitBtn">Git (önce güvenli Z)</button>
       </div>
       <div class="satir">
-        <button class="dugme hayalet" id="sifiraGitBtn">X0 Y0'a don</button>
+        <button class="dugme hayalet" id="sifiraGitBtn">X0 Y0'a dön</button>
       </div>
     </div>
 
     <!-- SIFIRLAMA -->
     <div class="kart">
       <div class="kart-bas">
-        <h2>Sifirlama / is sifiri</h2>
+        <h2>Sıfırlama / iş sıfırı</h2>
       </div>
       <p class="ipucu">
-        “Su anki konumun <b>5 mm sagi</b> yeni X sifiri olsun” gibi kaydirmali
-        sifirlama: ofseti yazip yonu secin. Ofset 0 ise klasik “burasi sifir”.
+        “Su anki konumun <b>5 mm sağı</b> yeni X sıfırı olsun” gibi kaydırmalı
+        sıfırlama: ofseti yazıp yönü seçin. Ofset 0 ise klasik “burası sıfır”.
       </p>
 
       <div class="sifir-satir" data-eksen="X">
         <span class="eksen-adi">X</span>
-        <button class="dugme kucuk" data-ofset="0">Burasi 0</button>
+        <button class="dugme kucuk" data-ofset="0">Burası 0</button>
         <div class="sifir-ofset">
           <input type="number" class="alan ofset" value="5" step="0.1">
           <button class="dugme hayalet kucuk" data-yon="-1">← solu</button>
-          <button class="dugme hayalet kucuk" data-yon="1">sagi →</button>
+          <button class="dugme hayalet kucuk" data-yon="1">sağı →</button>
         </div>
       </div>
       <div class="sifir-satir" data-eksen="Y">
         <span class="eksen-adi">Y</span>
-        <button class="dugme kucuk" data-ofset="0">Burasi 0</button>
+        <button class="dugme kucuk" data-ofset="0">Burası 0</button>
         <div class="sifir-ofset">
           <input type="number" class="alan ofset" value="5" step="0.1">
           <button class="dugme hayalet kucuk" data-yon="-1">↓ gerisi</button>
@@ -290,17 +356,17 @@
       </div>
       <div class="sifir-satir" data-eksen="Z">
         <span class="eksen-adi">Z</span>
-        <button class="dugme kucuk" data-ofset="0">Burasi 0</button>
+        <button class="dugme kucuk" data-ofset="0">Burası 0</button>
         <div class="sifir-ofset">
           <input type="number" class="alan ofset" value="0.2" step="0.1">
-          <button class="dugme hayalet kucuk" data-yon="-1">↓ altisi</button>
-          <button class="dugme hayalet kucuk" data-yon="1">ustu ↑</button>
+          <button class="dugme hayalet kucuk" data-yon="-1">↓ altısı</button>
+          <button class="dugme hayalet kucuk" data-yon="1">üstü ↑</button>
         </div>
       </div>
 
       <div class="ayirac"></div>
       <div class="satir">
-        <label>DRO'ya deger yaz</label>
+        <label>DRO'ya değer yaz</label>
         <select id="droEksen" class="alan dar">
           <option>X</option><option>Y</option><option>Z</option>
         </select>
@@ -312,15 +378,15 @@
     <!-- KLAVYE KILIDI -->
     <div class="kart kilit-kart">
       <div class="kart-bas">
-        <h2>Klavye / arayuz kilidi</h2>
+        <h2>Klavye / arayüz kilidi</h2>
         <label class="anahtar">
           <input type="checkbox" id="kilitAnahtar"><span></span>
         </label>
       </div>
       <p class="ipucu">
-        Kilit acikken <b>Windows, Alt, Tab ve diger tum tuslar yutulur</b>;
-        yalnizca jog tuslari gecer. Boylece Mach3 jog sirasinda odagi
-        kaybetmez ve eksen “kacmaz”. Ayrica Mach3 odagi kaybederse hareket
+        Kilit açıkken <b>Windows, Alt, Tab ve diğer tüm tuşlar yutulur</b>;
+        yalnizca jog tuşları geçer. Böylece Mach3 jog sırasında odağı
+        kaybetmez ve eksen “kaçmaz”. Ayrıca Mach3 odağı kaybederse hareket
         otomatik durdurulur.
       </p>
       <div class="kilit-durum" id="kilitDurum"></div>
@@ -331,18 +397,6 @@
         <div><kbd>Space</kbd> feed hold</div>
         <div><kbd>Esc</kbd> acil durdur</div>
       </div>
-    </div>
-
-    <!-- MDI -->
-    <div class="kart">
-      <div class="kart-bas"><h2>MDI (elle G-Code)</h2></div>
-      <div class="satir">
-        <input type="text" id="mdiSatir" class="alan" placeholder="G0 X100 Y50">
-        <button class="dugme" id="mdiBtn">Gonder</button>
-      </div>
-      <p class="ipucu">Gonderilmeden once hedefler yumusak limitlere gore
-        denetlenir; limit disina cikan satir reddedilir.</p>
-      <div class="mdi-gecmis" id="mdiGecmis"></div>
     </div>
 
   </div>
@@ -356,13 +410,13 @@
     <div class="kart prog-sol">
       <div class="kart-bas">
         <h2>G-Code</h2>
-        <button class="mini" id="gozatBtn">Dosya sec…</button>
+        <button class="mini" id="gozatBtn">Dosya seç…</button>
       </div>
-      <div class="dosya-bilgi" id="dosyaBilgi">Henuz dosya yuklenmedi.</div>
+      <div class="dosya-bilgi" id="dosyaBilgi">Henüz dosya yüklenmedi.</div>
 
       <div class="sira-bas">
-        <span>Kesim sirasi</span>
-        <span class="ipucu-kucuk">baslanacak blogu secin</span>
+        <span>Kesim sırası</span>
+        <span class="ipucu-kucuk">başlanacak bloğu seçin</span>
       </div>
       <div class="blok-liste" id="blokListe"></div>
     </div>
@@ -371,33 +425,33 @@
     <div class="prog-sag">
       <div class="kart">
         <div class="kart-bas">
-          <h2>Takim yolu</h2>
+          <h2>Takım yolu</h2>
           <div class="kart-bas-sag">
             <label class="mini-onay"><input type="checkbox" id="numaraGoster" checked> numara</label>
-            <label class="mini-onay"><input type="checkbox" id="tasimaGoster"> tasima</label>
+            <label class="mini-onay"><input type="checkbox" id="tasimaGoster"> taşıma</label>
           </div>
         </div>
         <div class="onizleme" id="onizleme">
-          <div class="bos-mesaj">Dosya secin, kesim sirasi burada gorunur.</div>
+          <div class="bos-mesaj">Dosya seçin, kesim sırası burada görünür.</div>
         </div>
         <!-- kesim alani olculeri (is sifirina gore) -->
         <div class="olcu-serit" id="olcuSerit"></div>
       </div>
 
       <div class="kart">
-        <div class="kart-bas"><h2>Sure tahmini</h2></div>
+        <div class="kart-bas"><h2>Süre tahmini</h2></div>
         <div class="sure-kutu" id="sureKutu">–</div>
       </div>
 
       <div class="kart">
-        <div class="kart-bas"><h2>Calistir</h2></div>
-        <div class="denetim" id="denetimKutu">Once denetim yapin.</div>
+        <div class="kart-bas"><h2>Çalıştır</h2></div>
+        <div class="denetim" id="denetimKutu">Önce denetim yapın.</div>
         <div class="satir">
-          <button class="dugme hayalet" id="denetleBtn">Guvenlik denetimi</button>
+          <button class="dugme hayalet" id="denetleBtn">Güvenlik denetimi</button>
           <label class="onay"><input type="checkbox" id="onayKutu"> Denetimi okudum, onayliyorum</label>
         </div>
         <div class="satir">
-          <button class="dugme basla" id="baslatBtn" disabled>Secili bloktan BASLAT</button>
+          <button class="dugme basla" id="baslatBtn" disabled>Seçili bloktan BAŞLAT</button>
         </div>
         <div class="satir uc">
           <button class="dugme hayalet" id="feedHoldBtn">Feed hold</button>
@@ -412,18 +466,18 @@
   <div class="katman gizli" id="gezginKatman">
     <div class="katman-kutu">
       <div class="kart-bas">
-        <h2>Dosya sec</h2>
+        <h2>Dosya seç</h2>
         <div class="kart-bas-sag">
-          <div class="secim" id="gezginSira" title="Siralama">
-            <button class="aktif" data-s="tarih">Yeni ustte</button>
-            <button data-s="ad">Ada gore</button>
+          <div class="secim" id="gezginSira" title="Sıralama">
+            <button class="aktif" data-s="tarih">Yeni üstte</button>
+            <button data-s="ad">Ada göre</button>
           </div>
           <button class="mini" id="gezginKapat">Kapat</button>
         </div>
       </div>
       <div class="yol-cubugu" id="gezginYol"></div>
       <input type="text" id="gezginSuz" class="alan gezgin-suz"
-             placeholder="Suz: dosya ya da klasor adi yazin…" autocomplete="off">
+             placeholder="Süz: dosya ya da klasör adı yazın…" autocomplete="off">
       <div class="gezgin" id="gezgin"></div>
     </div>
   </div>
@@ -434,7 +488,7 @@
   <div class="izgara">
     <div class="kart genis-kart">
       <div class="kart-bas">
-        <h2>Is raporu</h2>
+        <h2>İş raporu</h2>
         <div class="kart-bas-sag">
           <a class="dugme kucuk" id="rapPdf" href="/indir/rapor.pdf">PDF indir</a>
           <a class="dugme hayalet kucuk" id="rapCsv" href="/indir/rapor.csv">CSV</a>
@@ -442,10 +496,10 @@
           <button class="mini" id="rapYenile">Yenile</button>
         </div>
       </div>
-      <p class="ipucu">Calisan (ya da en son biten) isin olculeri. Ilerleme,
-        DRO'dan okunan konumla <b>kat edilen yoldan</b> hesaplanir; Mach3'un
-        COM arayuzu calisan satiri vermedigi icin satir takibi yapilamaz.</p>
-      <div class="rapor-ozet" id="raporOzet">Henuz calistirilmis bir is yok.</div>
+      <p class="ipucu">Çalışan (ya da en son biten) işin ölçüleri. Ilerleme,
+        DRO'dan okunan konumla <b>kat edilen yoldan</b> hesaplanır; Mach3'un
+        COM arayüzü çalışan satırı vermediği için satır takibi yapılamaz.</p>
+      <div class="rapor-ozet" id="raporOzet">Henüz çalıştırılmış bir iş yok.</div>
       <table class="tablo" id="raporBloklar"></table>
       <div class="rapor-olay" id="raporOlaylar"></div>
     </div>
@@ -462,15 +516,15 @@
     <!-- ---------------- SOL: sihirbaz ---------------- -->
     <div class="kart kal-sol">
       <div class="kart-bas">
-        <h2>Kumpasli kalibrasyon</h2>
-        <span class="ipucu-kucuk">olc → hesapla → Mach3'e yaz</span>
+        <h2>Kumpaslı kalibrasyon</h2>
+        <span class="ipucu-kucuk">ölç → hesapla → Mach3'e yaz</span>
       </div>
 
       <p class="ipucu">
-        Mach3'un COM arayuzunde <b>“Steps per unit”</b> ve <b>“Backlash”</b>
-        degerlerini okuyan/yazan bir cagri <b>yoktur</b>. Bu yuzden program
-        hareketi ve hesabi yapar; <b>Mach3'un hangi kutusuna hangi sayiyi
-        yazacaginizi</b> sag tarafta tam olarak soyler. Son yazma islemi
+        Mach3'un COM arayüzünde <b>“Steps per unit”</b> ve <b>“Backlash”</b>
+        değerlerini okuyan/yazan bir çağrı <b>yoktur</b>. Bu yüzden program
+        hareketi ve hesabı yapar; <b>Mach3'un hangi kutusuna hangi sayıyı
+        yazacağınızı</b> sağ tarafta tam olarak söyler. Son yazma işlemi
         sizdedir.
       </p>
 
@@ -484,18 +538,18 @@
           </div>
         </div>
         <div class="kal-alan">
-          <label>Olcum turu</label>
+          <label>Ölçüm türü</label>
           <div class="secim" id="kalTur">
-            <button class="aktif" data-t="olcek">Olcek (adim/mm)</button>
-            <button data-t="bosluk">Bosluk</button>
-            <button data-t="dogrulama">Dogrulama</button>
+            <button class="aktif" data-t="olcek">Ölçek (adım/mm)</button>
+            <button data-t="bosluk">Boşluk</button>
+            <button data-t="dogrulama">Doğrulama</button>
           </div>
         </div>
         <div class="kal-alan">
-          <label>Olcum yonu</label>
+          <label>Ölçüm yönü</label>
           <div class="secim" id="kalYon">
-            <button class="aktif" data-y="1">+ yon</button>
-            <button data-y="-1">− yon</button>
+            <button class="aktif" data-y="1">+ yön</button>
+            <button data-y="-1">− yön</button>
           </div>
         </div>
       </div>
@@ -503,19 +557,19 @@
       <div class="kal-tur-not" id="kalTurNot"></div>
 
       <div class="kal-form">
-        <div class="satir"><label>Olcum mesafesi</label>
+        <div class="satir"><label>Ölçüm mesafesi</label>
           <input type="number" id="kalMesafe" class="alan dar" step="1" min="1">
-          <span class="birim">mm — kumpas araliginiza sigmali</span></div>
-        <div class="satir"><label>Olcum beslemesi</label>
+          <span class="birim">mm — kumpas aralığınıza sığmalı</span></div>
+        <div class="satir"><label>Ölçüm beslemesi</label>
           <input type="number" id="kalFeed" class="alan dar" step="50" min="1">
-          <span class="birim">mm/dk — yavas olsun, tekrarlanabilir olur</span></div>
+          <span class="birim">mm/dk — yavaş olsun, tekrarlanabilir olur</span></div>
         <div class="satir"><label>On yaklasma</label>
           <input type="number" id="kalYaklasma" class="alan dar" step="0.5" min="0.1">
-          <span class="birim">mm — vida boslugunu olcum yonunde toplar</span></div>
-        <div class="satir"><label>Tekrar sayisi</label>
+          <span class="birim">mm — vida boşluğunu ölçüm yönünde toplar</span></div>
+        <div class="satir"><label>Tekrar sayısı</label>
           <input type="number" id="kalTekrar" class="alan dar" step="1" min="1" max="20">
-          <span class="birim">olcum ortalanir</span></div>
-        <div class="satir"><label>Kumpas cozunurlugu</label>
+          <span class="birim">ölçüm ortalanır</span></div>
+        <div class="satir"><label>Kumpas çözünürlüğü</label>
           <input type="number" id="kalCozunurluk" class="alan dar" step="0.001" min="0.001">
           <span class="birim">mm — genelde 0.01</span></div>
       </div>
@@ -523,26 +577,26 @@
       <div class="ayirac"></div>
 
       <div class="kal-adimbasi">
-        <div class="kart-bas"><h3>Mach3'teki GUNCEL adim sayisi</h3></div>
+        <div class="kart-bas"><h3>Mach3'teki GÜNCEL adım sayısı</h3></div>
         <p class="ipucu">
           <b>Mach3 → Config → Motor Tuning and Setup → &lt;eksen&gt; Axis</b>
-          penceresindeki <b>“Steps per”</b> kutusunda yazan degeri buraya
-          girin. Yeni deger bundan hesaplanir. Bos birakirsaniz program
-          yalnizca <b>carpan</b> verir (mevcut degerinizi onunla carparsiniz).
+          penceresindeki <b>“Steps per”</b> kutusunda yazan değeri buraya
+          girin. Yeni değer bundan hesaplanır. Boş bırakırsanız program
+          yalnizca <b>çarpan</b> verir (mevcut değerinizi onunla çarparsınız).
         </p>
         <div class="kal-ab" id="kalAdimBasiSatirlar"></div>
         <div class="satir">
           <button class="dugme hayalet kucuk" id="kalAyarKaydet">
-            Degerleri kaydet</button>
-          <span class="ipucu-kucuk">bu kayit makineyi degistirmez,
-            yalnizca hesap icin tutulur</span>
+            Değerleri kaydet</button>
+          <span class="ipucu-kucuk">bu kayıt makineyi değiştirmez,
+            yalnizca hesap için tutulur</span>
         </div>
       </div>
 
       <div class="ayirac"></div>
 
       <div class="satir uc">
-        <button class="dugme genis" id="kalBasla">Kalibrasyonu baslat</button>
+        <button class="dugme genis" id="kalBasla">Kalibrasyonu başlat</button>
         <button class="dugme hayalet" id="kalIptal">Oturumu kapat</button>
       </div>
 
@@ -554,56 +608,56 @@
     <div class="kal-sag">
 
       <div class="kart">
-        <div class="kart-bas"><h2>Olcum sonucu</h2></div>
-        <div class="kal-sonuc" id="kalSonuc">Henuz olcum yapilmadi.</div>
+        <div class="kart-bas"><h2>Ölçüm sonucu</h2></div>
+        <div class="kal-sonuc" id="kalSonuc">Henüz ölçüm yapılmadı.</div>
       </div>
 
       <div class="kart vurgu-kart">
         <div class="kart-bas">
-          <h2>Mach3'e girilecek degerler</h2>
+          <h2>Mach3'e girilecek değerler</h2>
           <button class="mini" id="kalKopyala">Kopyala</button>
         </div>
         <div class="kal-talimat" id="kalTalimat">
-          Olcum bitince Mach3'te acilacak pencere, kutu adi ve yazilacak sayi
-          burada gorunur.
+          Ölçüm bitince Mach3'te açılacak pencere, kutu adı ve yazılacak sayı
+          burada görünür.
         </div>
         <div class="satir">
           <button class="dugme genis gizli" id="kalUygula">
             Mach3'e girdim — kaydet</button>
         </div>
         <div class="satir gizli" id="kalElleSatir">
-          <label>Mach3'e yazdigim deger</label>
+          <label>Mach3'e yazdığım değer</label>
           <input type="number" id="kalElleDeger" class="alan dar" step="0.0001">
           <span class="birim">steps/mm</span>
         </div>
       </div>
 
       <div class="kart">
-        <div class="kart-bas"><h2>Kayitli degerler</h2></div>
+        <div class="kart-bas"><h2>Kayıtlı değerler</h2></div>
         <table class="tablo" id="kalKayitli"></table>
-        <div class="kart-bas ust-bosluk"><h3>Gecmis</h3></div>
+        <div class="kart-bas ust-bosluk"><h3>Geçmiş</h3></div>
         <div class="kal-gecmis" id="kalGecmis"></div>
       </div>
 
       <div class="kart">
-        <div class="kart-bas"><h2>Kumpasi nasil baglarim?</h2></div>
+        <div class="kart-bas"><h2>Kumpası nasıl bağlarım?</h2></div>
         <ol class="ipucu kal-nasil">
-          <li>Kumpasin <b>sabit cenesini</b> tezgaha (koprü/tabla — hareket
-            ETMEYEN parcaya) mengene, miknatis ya da cift tarafli bantla
+          <li>Kumpasın <b>sabit çenesini</b> tezgâha (koprü/tabla — hareket
+            ETMEYEN parçaya) mengene, mıknatıs ya da çift taraflı bantla
             sabitleyin.</li>
-          <li><b>Hareketli cenesini</b> spindle/kizak tarafina (hareket EDEN
-            parcaya) dayayin. Ikisi de olcum ekseni dogrultusunda olmali.</li>
-          <li>Kumpasin <b>derinlik cubugu</b> uzun mesafeler icin daha
-            kullanislidir: cubugu sabit bir kose blokla temas ettirin.</li>
-          <li>Olcum boyunca cene ile temasin kopmadigindan ve kumpasin
-            egilmedigindan emin olun; <b>egilme = sahte sapma</b>.</li>
-          <li>Olcum mesafesi kumpas araligindan (genelde 150 mm) buyuk
-            olamaz. 100 mm ideal: uzun olcu, kucuk oransal hata.</li>
+          <li><b>Hareketli çenesini</b> spindle/kızak tarafına (hareket EDEN
+            parçaya) dayayın. Ikisi de ölçüm ekseni doğrultusunda olmalı.</li>
+          <li>Kumpasın <b>derinlik çubuğu</b> uzun mesafeler için daha
+            kullanışlıdır: çubuğu sabit bir köşe blokla temas ettirin.</li>
+          <li>Ölçüm boyunca çene ile temasın kopmadığından ve kumpasın
+            eğilmediğinden emin olun; <b>eğilme = sahte sapma</b>.</li>
+          <li>Ölçüm mesafesi kumpas aralığından (genelde 150 mm) büyük
+            olamaz. 100 mm ideal: uzun ölçü, küçük oransal hata.</li>
         </ol>
         <div class="uyari-kutu">
-          <b>Adim sayisini degistirdikten sonra</b> tezgah referansini
-          yeniden alin ve yumusak limitler ile tezgah tabanini dogrulayin:
-          makine koordinatinin olcegi degismistir.
+          <b>Adım sayısını değiştirdikten sonra</b> tezgâh referansını
+          yeniden alın ve yumuşak limitler ile tezgâh tabanını doğrulayın:
+          makine koordinatının ölçeği değişmiştir.
         </div>
       </div>
     </div>
@@ -614,50 +668,50 @@
 <section class="sayfa" id="sayfa-guvenlik">
   <div class="izgara">
     <div class="kart">
-      <div class="kart-bas"><h2>Yumusak limitler (makine koordinati)</h2></div>
-      <p class="ipucu">Her hareket, gonderilmeden once bu hacme gore
-        denetlenir. <b>Makinenizin gercek olculerini girin.</b></p>
+      <div class="kart-bas"><h2>Yumuşak limitler (tezgâh koordinatı)</h2></div>
+      <p class="ipucu">Her hareket, gönderilmeden önce bu hacme göre
+        denetlenir. <b>Makinenizin gerçek ölçülerini girin.</b></p>
       <table class="tablo" id="limitTablo"></table>
       <label class="onay">
         <input type="checkbox" id="limitDogru">
-        Bu degerleri makinemde dogruladim
+        Bu değerleri makinemde doğruladım
       </label>
       <div class="satir">
-        <label>Limit payi</label>
+        <label>Limit payı</label>
         <input type="number" id="limitPayi" class="alan" step="0.5">
         <span class="birim">mm</span>
       </div>
       <label class="onay">
-        <input type="checkbox" id="limitZorunlu"> Yumusak limitleri uygula
+        <input type="checkbox" id="limitZorunlu"> Yumuşak limitleri uygula
       </label>
     </div>
 
     <div class="kart vurgu-kart">
-      <div class="kart-bas"><h2>Tezgah tabani (dalma korumasi)</h2></div>
+      <div class="kart-bas"><h2>Tezgâh tabanı (dalma koruması)</h2></div>
       <p class="ipucu">
-        <b>MAKINE koordinatinda</b> mutlak alt sinir. Is sifirini nerede
-        yaparsaniz yapin, hangi boyda bicak takarsaniz takin, hicbir komut
-        bu degerin altina inemez. Asagidaki “en derin elle inis” degeri ise
-        <b>IS sifirina</b> goredir ve her sifirlamada baska bir fiziksel
-        yuksekli§e denk gelir — tezgahi koruyan bu <b>degil</b>, budur.
+        <b>MAKINE koordinatında</b> mutlak alt sınır. İş sıfırını nerede
+        yaparsanız yapın, hangi boyda bicak takarsanız takın, hiçbir komut
+        bu değerin altına inemez. Aşağıdaki “en derin elle iniş” değeri ise
+        <b>İŞ sıfırına</b> göredir ve her sıfırlamada başka bir fiziksel
+        yüksekliğe denk gelir — tezgâhı koruyan bu <b>değil</b>, budur.
       </p>
       <div class="satir">
-        <label>Tezgah tabani (tezgah Z)</label>
+        <label>Tezgâh tabanı (tezgâh Z)</label>
         <input type="number" id="gTaban" class="alan" step="0.5"
-               placeholder="olculmedi">
+               placeholder="ölçülmedi">
         <span class="birim">mm</span>
       </div>
       <label class="onay"><input type="checkbox" id="gTabanZorunlu">
-        Tezgah tabani denetimini uygula</label>
+        Tezgâh tabanı denetimini uygula</label>
       <div class="taban-olc">
-        <div><b>Nasil olculur?</b></div>
+        <div><b>Nasıl ölçülür?</b></div>
         <ol class="ipucu">
-          <li>Takimi tabla yuzeyine deger konuma indirin (kagit yontemi).</li>
-          <li>Mach3'te <b>MAKINE</b> Z degerini okuyun (is degerini degil).</li>
-          <li>Uzerine 1–2 mm pay ekleyip buraya yazin.</li>
+          <li>Takımı tabla yüzeyine değer konuma indirin (kağıt yöntemi).</li>
+          <li>Mach3'te <b>MAKINE</b> Z değerini okuyun (iş değerini değil).</li>
+          <li>Üzerine 1–2 mm pay ekleyip buraya yazın.</li>
         </ol>
         <button class="dugme hayalet kucuk" id="tabanSuAn">
-          Su anki tezgah Z'yi kullan
+          Su anki tezgâh Z'yi kullan
         </button>
         <span class="ipucu-kucuk" id="tabanSuAnDeger"></span>
       </div>
@@ -665,39 +719,50 @@
     </div>
 
     <div class="kart">
-      <div class="kart-bas"><h2>Hareket sinirlari</h2></div>
-      <div class="satir"><label>En buyuk jog adimi</label>
+      <div class="kart-bas"><h2>Hareket sınırları</h2></div>
+      <div class="satir"><label>En büyük jog adımı</label>
         <input type="number" id="gMaxAdim" class="alan" step="1"><span class="birim">mm</span></div>
-      <div class="satir"><label>En yuksek jog beslemesi</label>
+      <div class="satir"><label>En yüksek jog beslemesi</label>
         <input type="number" id="gMaxFeed" class="alan" step="100"><span class="birim">mm/dk</span></div>
-      <div class="satir"><label>Guvenli Z</label>
+      <div class="satir"><label>Güvenli Z</label>
         <input type="number" id="gGuvenliZ" class="alan" step="1"><span class="birim">mm</span></div>
-      <div class="satir"><label>En derin elle inis</label>
+      <div class="satir"><label>En derin elle iniş</label>
         <input type="number" id="gDerinlik" class="alan" step="1"><span class="birim">mm</span></div>
-      <div class="satir"><label>Surekli jog ust siniri</label>
+      <div class="satir"><label>Sürekli jog üst sınırı</label>
         <input type="number" id="gJogSure" class="alan" step="1"><span class="birim">sn</span></div>
-      <div class="satir"><label>Kalp atisi araligi</label>
+      <div class="satir"><label>Kalp atışı aralığı</label>
         <input type="number" id="gKalp" class="alan" step="50"><span class="birim">ms</span></div>
 
       <div class="ayirac"></div>
-      <div class="kart-bas"><h3>Surekli jog hissiyati</h3></div>
-      <p class="ipucu">Mach3'un COM arayuzunde gercek bir surekli jog cagrisi
-        yoktur; hareket kisa adimlarin zincirlenmesiyle uretilir. <b>Ortusme</b>
-        her adimi bir sonraki gelene kadar surdurur — kucultursaniz eksen
-        adimlar arasinda takilir, buyutursaniz birakinca sonlanma mesafesi
-        uzar.</p>
-      <div class="satir"><label>Yavas jog (yon tusu)</label>
-        <input type="number" id="gJogYavas" class="alan" step="50"><span class="birim">mm/dk</span></div>
-      <div class="satir"><label>Hizli jog (Shift+yon)</label>
-        <input type="number" id="gJogHizli" class="alan" step="100"><span class="birim">mm/dk</span></div>
-      <div class="satir"><label>Adim araligi (tik)</label>
-        <input type="number" id="gJogTik" class="alan" step="10" min="20"><span class="birim">ms</span></div>
-      <div class="satir"><label>Adim ortusmesi</label>
-        <input type="number" id="gJogOrtusme" class="alan" step="0.05" min="1"><span class="birim">×</span></div>
-      <label class="onay"><input type="checkbox" id="gJogDurdur">
-        Birakinca Feed Hold + Stop ile kuyrugu bosalt (onerilir)</label>
+      <div class="kart-bas"><h3>Jog (Mach3 modeli)</h3></div>
+      <p class="ipucu">Jog hızı, <b>Slow Jog Rate % × eksen azami hızı</b> olarak
+        hesaplanır (Mach3'teki gibi). Eksen azami hızı ve ivme
+        <b>Ayarlar › Makine</b>'de, Mach3 <i>Motor Tuning</i> değerlerinizle aynı
+        olmalıdır. Slow Jog %, Step ve kip ana ekrandaki jog panelinden ayarlanır.</p>
+      <div class="satir"><label>Jog sürücüsü</label>
+        <select id="gJogSurucu" class="alan">
+          <option value="artimli">Artımlı (MDI zinciri) — her Mach3'te çalışır</option>
+          <option value="mach3">Mach3'ün kendi jog'u (JogOn/JogOff) — doğrulama gerekir</option>
+        </select></div>
+      <div class="satir"><label>Zincir aralığı</label>
+        <input type="number" id="gJogTik" class="alan" step="5" min="15"><span class="birim">ms</span></div>
+      <div class="satir"><label>İleri komut süresi</label>
+        <input type="number" id="gJogIleri" class="alan" step="0.05" min="0.1"><span class="birim">sn</span></div>
+      <div class="satir"><label>Step tamponu</label>
+        <input type="number" id="gJogTampon" class="alan" step="1" min="1" max="20">
+        <span class="birim">basış (IncBuffer)</span></div>
+      <div class="satir"><label>Step listesi</label>
+        <input type="text" id="gJogListe" class="alan" placeholder="10, 1, 0.1, 0.01, 0.001">
+        <span class="birim">mm</span></div>
+      <div class="satir"><label>ACİL DURDUR → Reset</label>
+        <label class="anahtar"><input type="checkbox" id="gAcilReset"><span></span></label></div>
+      <p class="ipucu">ACİL DURDUR, Feed Hold + Stop'tan sonra Mach3'ün Reset'ine de
+        basar (Mach3'te <kbd>Esc</kbd> = Reset). Mach3 zaten Reset'teyse
+        <b>basılmaz</b>: Reset bir terslemedir, tekrar basmak E-Stop'u kaldırırdı.</p>
+      <label class="onay"><input type="checkbox" id="gBirimZorla">
+        Program mm'de çalışır: Mach3 G20 (inç) kipindaysa her harekette G21 zorla</label>
       <label class="onay"><input type="checkbox" id="gGuvenliZZorunlu">
-        XY hareketinden once Z'yi guvenli yuksekli§e al</label>
+        XY hareketinden önce Z'yi güvenli yüksekliğe al</label>
       <div class="satir"><button class="dugme genis" id="guvenlikKaydet">Kaydet</button></div>
     </div>
 
@@ -705,9 +770,9 @@
       <div class="kart-bas"><h2>Durum</h2></div>
       <div class="durum-liste" id="guvenlikDurum"></div>
       <div class="uyari-kutu">
-        <b>Unutmayin:</b> Bu yazilim bir guvenlik cihazi degildir. Donanim
-        acil-stop butonunuzun ve limit switchlerinizin yerine gecmez.
-        Yazilim/ag/Windows her zaman cokebilir.
+        <b>Unutmayın:</b> Bu yazılım bir güvenlik cihazı değildir. Donanım
+        acil-stop butonunuzun ve limit switchlerinizin yerine geçmez.
+        Yazılım/ağ/Windows her zaman çökebilir.
       </div>
     </div>
   </div>
@@ -717,13 +782,13 @@
 <section class="sayfa" id="sayfa-ayarlar">
   <div class="izgara">
     <div class="kart">
-      <div class="kart-bas"><h2>Baglanti</h2></div>
+      <div class="kart-bas"><h2>Bağlantı</h2></div>
       <div class="satir">
-        <label>Tur</label>
+        <label>Tür</label>
         <select id="baglantiTur" class="alan">
           <option value="otomatik">Otomatik</option>
           <option value="com">Mach3 (COM)</option>
-          <option value="simulasyon">Simulasyon</option>
+          <option value="simulasyon">Simülasyon</option>
         </select>
       </div>
       <div class="satir"><label>ProgID</label>
@@ -731,46 +796,50 @@
       <div class="satir"><label>Yoklama</label>
         <input type="number" id="yoklamaHz" class="alan" step="1"><span class="birim">Hz</span></div>
       <label class="onay"><input type="checkbox" id="mach3Baslat">
-        Mach3 kapaliysa baslat (onerilmez — normalde Mach3'u siz acin)</label>
+        Mach3 kapalıysa program başlatsın (gerekli: elle açılan Mach3'e
+        COM ile bağlanılamaz)</label>
       <div class="satir">
-        <button class="dugme" id="baglanBtn">Baglan</button>
-        <button class="dugme hayalet" id="kesBtn">Baglantiyi kes</button>
+        <button class="dugme" id="baglanBtn">Bağlan</button>
+        <button class="dugme hayalet" id="kesBtn">Bağlantıyı kes</button>
       </div>
       <div class="yetenek" id="yetenekKutu"></div>
     </div>
 
     <div class="kart">
       <div class="kart-bas"><h2>Makine</h2></div>
-      <div class="satir"><label>Hizli hiz X/Y</label>
+      <p class="ipucu">Eksen azami hızı ve ivme, Mach3 <i>Motor Tuning</i>
+        değerlerinizle <b>aynı</b> olmalı: jog hızı, durma mesafesi ve süre
+        tahmini bunlardan hesaplanır.</p>
+      <div class="satir"><label>Eksen azami hızı X/Y</label>
         <input type="number" id="hizXY" class="alan" step="100"><span class="birim">mm/dk</span></div>
-      <div class="satir"><label>Hizli hiz Z</label>
+      <div class="satir"><label>Eksen azami hızı Z</label>
         <input type="number" id="hizZ" class="alan" step="100"><span class="birim">mm/dk</span></div>
       <div class="satir"><label>Ivme X/Y</label>
         <input type="number" id="ivmeXY" class="alan" step="10"><span class="birim">mm/s²</span></div>
       <div class="satir"><label>Ivme Z</label>
         <input type="number" id="ivmeZ" class="alan" step="10"><span class="birim">mm/s²</span></div>
-      <div class="satir"><label>Sifirlama yontemi</label>
+      <div class="satir"><label>Sıfırlama yöntemi</label>
         <select id="sifirYontem" class="alan">
           <option value="dro">DRO'ya yaz (SetOEMDRO)</option>
-          <option value="g10">G10 L20 (fikstur ofseti)</option>
+          <option value="g10">G10 L20 (fikstür ofseti)</option>
         </select></div>
-      <div class="satir"><label>Sure kalibrasyonu</label>
+      <div class="satir"><label>Süre kalibrasyonu</label>
         <input type="number" id="sureKatsayi" class="alan" step="0.01"></div>
       <div class="satir"><button class="dugme genis" id="makineKaydet">Kaydet</button></div>
     </div>
 
     <div class="kart">
-      <div class="kart-bas"><h2>Klavye kisayollari</h2></div>
+      <div class="kart-bas"><h2>Klavye kısayolları</h2></div>
       <label class="onay"><input type="checkbox" id="kDroCtrl">
-        DRO yazmak icin <b>Ctrl</b> gereksin (Mach3 gibi)</label>
-      <p class="ipucu">Kapaliysa dogrudan <kbd>X</kbd>/<kbd>Y</kbd>/<kbd>Z</kbd>
-        tusu DRO alanini acar. Bir yazi alanina yazarken kisayollar
-        her iki durumda da devre disidir.</p>
+        DRO yazmak için <b>Ctrl</b> gereksin (Mach3 gibi)</label>
+      <p class="ipucu">Kapalıysa doğrudan <kbd>X</kbd>/<kbd>Y</kbd>/<kbd>Z</kbd>
+        tuşu DRO alanını açar. Bir yazı alanına yazarken kısayollar
+        her iki durumda da devre dışıdır.</p>
       <div class="satir"><label>Besleme azalt</label>
         <input type="text" id="kFroAzalt" class="alan dar" maxlength="6"></div>
-      <div class="satir"><label>Besleme artir</label>
+      <div class="satir"><label>Besleme artır</label>
         <input type="text" id="kFroArtir" class="alan dar" maxlength="6"></div>
-      <div class="satir"><label>Besleme adimi</label>
+      <div class="satir"><label>Besleme adımı</label>
         <input type="number" id="kFroAdim" class="alan dar" step="1" min="1">
         <span class="birim">%</span></div>
       <div class="satir"><button class="dugme genis" id="klavyeKaydet">Kaydet</button></div>
@@ -778,38 +847,56 @@
 
     <div class="kart">
       <div class="kart-bas"><h2>Yeni dosya izleme</h2></div>
-      <p class="ipucu">Kok klasorun altindaki tum alt klasorler taranir
+      <p class="ipucu">Kök klasörün altındaki tüm alt klasörler taranır
         (or. <code>30-01-2026\firma-XXX\001-malzemeX</code>). Yeni bir
-        G-Code dosyasi cikinca <b>sorularak</b> yuklenir.</p>
+        G-Code dosyası çıkınca <b>sorularak</b> yüklenir.</p>
       <label class="onay"><input type="checkbox" id="izAktif">
         Izlemeyi ac</label>
-      <div class="satir"><label>Kok klasor</label>
+      <div class="satir"><label>Kök klasör</label>
         <input type="text" id="izKok" class="alan" placeholder="D:\isler"></div>
-      <div class="satir"><label>Tarama derinligi</label>
+      <div class="satir"><label>Tarama derinliği</label>
         <input type="number" id="izDerinlik" class="alan dar" step="1" min="1">
-        <span class="birim">klasor</span></div>
-      <div class="satir"><label>Tarama araligi</label>
+        <span class="birim">klasör</span></div>
+      <div class="satir"><label>Tarama aralığı</label>
         <input type="number" id="izAralik" class="alan dar" step="1" min="1">
         <span class="birim">sn</span></div>
-      <div class="satir"><label>“Yeni” sayilma suresi</label>
+      <div class="satir"><label>“Yeni” sayılma süresi</label>
         <input type="number" id="izYeni" class="alan dar" step="10" min="1">
         <span class="birim">dk</span></div>
       <div class="izleme-durum" id="izlemeDurum"></div>
       <div class="satir">
         <button class="dugme genis" id="izlemeKaydet">Kaydet</button>
-        <button class="dugme hayalet kucuk" id="izlemeSifirla">Gecmisi unut</button>
+        <button class="dugme hayalet kucuk" id="izlemeSifirla">Geçmişi unut</button>
       </div>
     </div>
 
     <div class="kart genis-kart">
       <div class="kart-bas">
-        <h2>Mach3 OEM kodlari</h2>
+        <h2>Mach3 tanılama</h2>
+        <div class="kart-bas-sag">
+          <button class="mini" id="tanilamaYenile">Yenile</button>
+          <button class="dugme hayalet kucuk" id="jogDogrulaBtn"
+                  title="JogOn yön değerlerini her eksende öğrenir (sınırlı hareket)">
+            Mach3 jog doğrulama…</button>
+        </div>
+      </div>
+      <p class="ipucu">Mach3'ün canlı durumu. <b>Mach3 jog doğrulama</b>, Mach3'ün
+        kendi jog motorunun (<code>JogOn</code>/<code>JogOff</code>) yön
+        kodlamasını her eksende ~0,35 sn'lik, %5 hızlı bir hareketle öğrenir;
+        başarılı olursa Güvenlik › Jog sürücüsü olarak seçilebilir. Eksenin
+        iki yönde de ≥ 6 mm boşluğu olmalı.</p>
+      <div class="durum-liste" id="tanilamaKutu">–</div>
+    </div>
+
+    <div class="kart genis-kart">
+      <div class="kart-bas">
+        <h2>Mach3 OEM kodları</h2>
         <button class="mini" id="oemKaydet">Kaydet</button>
       </div>
       <p class="ipucu">
-        Kodlar Mach3 surumune/profiline gore degisebilir.
-        <b>guven: dusuk</b> olanlari kendi makinenizde dogrulayin
-        (Mach3 → Operator → OEM kod listesi).
+        Kodlar Mach3 sürümüne/profiline göre değişebilir.
+        <b>güven: düşük</b> olanları kendi makinenizde doğrulayın
+        (Mach3 → Operatör → OEM kod listesi).
       </p>
       <div class="oem" id="oemKutu"></div>
     </div>
@@ -820,8 +907,8 @@
 <section class="sayfa" id="sayfa-gunluk">
   <div class="kart">
     <div class="kart-bas">
-      <h2>Olay gunlugu</h2>
-      <span class="ipucu-kucuk">gonderilen her komut kaydedilir</span>
+      <h2>Olay günlüğü</h2>
+      <span class="ipucu-kucuk">gönderilen her komut kaydedilir</span>
     </div>
     <div class="gunluk" id="gunluk"></div>
   </div>
@@ -832,12 +919,12 @@
 <!-- ================= PIN KATMANI ================= -->
 <div class="katman gizli" id="pinKatman">
   <div class="katman-kutu dar-kutu">
-    <h2>Uzaktan erisim</h2>
-    <p class="ipucu">Bu cihaz makinenin bilgisayari degil. Sunucu konsolunda
+    <h2>Uzaktan erişim</h2>
+    <p class="ipucu">Bu cihaz makinenin bilgisayarı değil. Sunucu konsolunda
       yazan <b>PIN</b> kodunu girin.</p>
     <input type="tel" id="pinAlan" class="alan buyuk" inputmode="numeric"
            placeholder="000000" maxlength="12">
-    <div class="satir"><button class="dugme genis" id="pinBtn">Giris</button></div>
+    <div class="satir"><button class="dugme genis" id="pinBtn">Giriş</button></div>
     <div class="hata gizli" id="pinHata"></div>
   </div>
 </div>
@@ -848,13 +935,13 @@
     <h2><span id="droKatmanEksen">X</span> ekseni DRO</h2>
     <div class="dro-mod">
       <label class="dro-mod-sec secili" id="droModIsEt">
-        <input type="radio" name="droMod" value="is" checked> <b>Is
-        koordinati</b><span>Parca sifiri. Kesim burdan olculur, limitleri
-        DEGISTIRMEZ.</span></label>
+        <input type="radio" name="droMod" value="is" checked> <b>İş
+        koordinatı</b><span>Parça sıfırı. Kesim burdan ölçülür, limitleri
+        DEĞİŞTİRMEZ.</span></label>
       <label class="dro-mod-sec" id="droModTezgahEt">
-        <input type="radio" name="droMod" value="tezgah"> <b>Tezgah
-        koordinati</b><span>“Su an tezgahin bu noktasindayim.” Yumusak
-        limitler buna gore olculur.</span></label>
+        <input type="radio" name="droMod" value="tezgah"> <b>Tezgâh
+        koordinatı</b><span>“Su an tezgâhın bu noktasındayım.” Yumuşak
+        limitler buna göre ölçülür.</span></label>
     </div>
     <div class="dro-katman-bilgi" id="droKatmanBilgi"></div>
     <input type="number" id="droKatmanDeger" class="alan buyuk" step="0.001"
@@ -870,52 +957,66 @@
 <!-- ============ TEZGAH REFERANSI ============ -->
 <div class="katman gizli" id="refKatman">
   <div class="katman-kutu dar-kutu">
-    <h2>Tezgah referansi</h2>
-    <p class="ipucu">Kafanin <b>su anki fiziksel yerinin</b> tezgah
-      koordinatini yazin. Sifir kosesindeyseniz hepsi 0 kalsin. Yumusak
-      limitler bu noktadan olculecegi icin deger dogru olmali.</p>
+    <h2>Tezgâh referansı</h2>
+    <p class="ipucu">Kafanın <b>su anki fiziksel yerinin</b> tezgâh
+      koordinatını yazın. Sıfır köşesindeyseniz hepsi 0 kalsın. Yumuşak
+      limitler bu noktadan ölçüleceği için değer doğru olmalı.</p>
     <div id="refKatmanSatirlar" class="ref-satirlar"></div>
     <div class="satir uc">
       <button class="dugme hayalet" id="refKatmanIptal">Iptal (Esc)</button>
-      <button class="dugme" id="refKatmanTamam">Referansi kaydet</button>
+      <button class="dugme" id="refKatmanTamam">Referansı kaydet</button>
     </div>
     <details class="ref-makine">
-      <summary>Mach3'un makine koordinatini da sifirla (Ref)</summary>
-      <p class="ipucu">Mach3'te makine DRO'suna deger <b>yazilamaz</b>;
-        yalnizca bulunulan nokta <b>0</b> yapilabilir. Bunu yaparsaniz
-        Mach3'un <b>kendi</b> yumusak limitleri de dogru yerden olculur —
-        yani el kumandasi ve Mach3 ekranindan yapilan hareketler de
+      <summary>Mach3'un makine koordinatını da sıfırla (Ref)</summary>
+      <p class="ipucu">Mach3'te makine DRO'suna değer <b>yazılamaz</b>;
+        yalnizca bulunulan nokta <b>0</b> yapılabilir. Bunu yaparsanız
+        Mach3'un <b>kendi</b> yumuşak limitleri de doğru yerden ölçülür —
+        yani el kumandası ve Mach3 ekranından yapılan hareketler de
         korunur.</p>
       <p class="ipucu tehlike-yazi"><b>Dikkat:</b> bir eksende
-        <b>home switch tanimliysa</b> Ref o ekseni switch'i <b>aramaya
-        gonderir</b> (hareket eder). Switch'iniz yoksa hicbir eksen
-        kimildamaz. Emin degilseniz kullanmayin.</p>
+        <b>home switch tanımlıysa</b> Ref o ekseni switch'i <b>aramaya
+        gönderir</b> (hareket eder). Switch'iniz yoksa hiçbir eksen
+        kımıldamaz. Emin değilseniz kullanmayın.</p>
       <button class="dugme tehlike genis" id="refMakineSifir">
-        Bulundugum noktayi makine sifiri yap</button>
+        Bulunduğum noktayı makine sıfırı yap</button>
     </details>
   </div>
 </div>
 
-<!-- ============ PROFIL KAYDET ============ -->
-<div class="katman gizli" id="profilKatman">
+<!-- ============ HOME KAYDET / DÜZENLE ============ -->
+<div class="katman gizli" id="homeKatman">
   <div class="katman-kutu dar-kutu">
-    <h2>Is sifiri profili kaydet</h2>
-    <p class="ipucu">Su anki is sifiri, <b>makine koordinatiyla</b> saklanir.
-      Profili geri yukledi§inizde tam olarak ayni fiziksel yuksekli§e
-      donulur — bicak boyu degisse bile.</p>
-    <div class="satir"><label>Ad</label>
-      <input type="text" id="profilAd" class="alan"
-             placeholder="6mm duz freze / MDF 18"></div>
-    <div class="satir"><label>Takim boyu</label>
-      <input type="number" id="profilBoy" class="alan dar" step="0.01">
-      <span class="birim">mm (istege bagli)</span></div>
+    <h2 id="homeBaslik">Home kaydet</h2>
+    <p class="ipucu">Koordinatlar <b>tezgâh koordinatıdır</b> (iş sıfırının tezgâhtaki
+      yeri). Şu anki sıfırı almak için <i>Mevcut sıfırı al</i>; ya da sayıları
+      elle yazın. <b>Boş bırakılan eksen</b> saklanmaz ve o eksene dokunulmaz.</p>
+    <div class="satir"><label>Takma ad</label>
+      <input type="text" id="homeAd" class="alan" maxlength="60"
+             placeholder="Levha A — 18 mm MDF" autocomplete="off"></div>
+    <div class="satir"><label>Malzeme</label>
+      <input type="text" id="homeMalzeme" class="alan" maxlength="80"
+             placeholder="MDF 18 mm (isteğe bağlı)" autocomplete="off"></div>
+    <div class="home-koord">
+      <label>X <input type="number" id="homeX" class="alan" step="0.001" inputmode="decimal"></label>
+      <label>Y <input type="number" id="homeY" class="alan" step="0.001" inputmode="decimal"></label>
+      <label>Z <input type="number" id="homeZ" class="alan" step="0.001" inputmode="decimal"></label>
+    </div>
+    <div class="satir">
+      <button class="dugme hayalet kucuk" id="homeMevcutAl">Mevcut sıfırı al</button>
+      <span class="ipucu-kucuk" id="homeMevcutBilgi"></span>
+    </div>
+    <div class="satir"><label>Takım boyu</label>
+      <input type="number" id="homeBoy" class="alan dar" step="0.01">
+      <span class="birim">mm (isteğe bağlı)</span></div>
+    <div class="satir"><label>Güvenli Z</label>
+      <input type="number" id="homeGZ" class="alan dar" step="1">
+      <span class="birim">mm — boş: değiştirme</span></div>
     <div class="satir"><label>Not</label>
-      <input type="text" id="profilNot" class="alan"></div>
-    <div class="profil-onizleme" id="profilOnizleme"></div>
-    <div class="satir uc">
-      <button class="dugme hayalet" id="profilIptal">Iptal</button>
-      <button class="dugme" id="profilTamam">Kaydet</button>
-      <button class="dugme hayalet" id="profilSil">Secili profili sil</button>
+      <input type="text" id="homeNot" class="alan" maxlength="200" autocomplete="off"></div>
+    <div class="home-uyari gizli" id="homeUyari"></div>
+    <div class="satir home-alt-dugmeler">
+      <button class="dugme hayalet" id="homeIptal">İptal</button>
+      <button class="dugme" id="homeTamam">Kaydet</button>
     </div>
   </div>
 </div>
@@ -924,5 +1025,7 @@
 <div class="bildirim-alan" id="bildirimAlan"></div>
 
 <script src="/app.js"></script>
+<script src="/ekran.js"></script>
+<script src="/home.js"></script>
 </body>
 </html>

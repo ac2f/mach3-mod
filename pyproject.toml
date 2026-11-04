@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mach3-kontrol"
-version = "1.0.0"
-description = "Mach3 icin guvenlik onlemli, mobil uyumlu web kontrol arayuzu: jog kilidi, yumusak limitler, kesim sirasi secimi ve sure tahmini"
+version = "2.0.0"
+description = "Mach3 icin Mach3 ekranini birebir izleyen, guvenlik onlemli web kontrol arayuzu: Mach3 jog modeli (Cont/Step), yumusak limitler, kesim sirasi ve sure tahmini"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
