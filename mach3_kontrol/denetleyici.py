@@ -19,6 +19,7 @@ import time
 from . import baglanti as BAG
 from . import gcode as GC
 from . import guvenlik as GUV
+from . import kalibrasyon as KAL
 from . import izleyici as IZL
 from . import is_takip as IST
 from . import kodlar as KOD
@@ -56,6 +57,8 @@ class Denetleyici:
         # jog durumu
         self._jog_dur = threading.Event()
         self._jog_is = None
+        # Suren jogun beslemesi; Shift'e basip birakmak bunu canli degistirir
+        self._jog_feed = 600.0
         self.jog_bilgi = {"aktif": False, "eksen": None, "yon": 0}
         self.bekci = GUV.KalpAtisiBekcisi(
             self._bekci_durdur,
@@ -83,6 +86,11 @@ class Denetleyici:
         self.secili_blok = 0
         self.calisiyor = False
         self.son_calistirma = None
+
+        # kumpasla kalibrasyon oturumu (bkz. kalibrasyon.py)
+        self.kalib = None
+        self.kalib_son = None
+        self._kalib_is = None
 
         # is takibi (gecen sure, ilerleme, blok sureleri) + son rapor
         self.takip = IST.IsTakip()
@@ -525,6 +533,9 @@ class Denetleyici:
             "rapor_hazir": bool(self.son_rapor),
             "izleme": self.izleyici.durum(),
             "profiller": self.profiller(),
+            # Yalnizca ozet: tam durum /api/kalibrasyon ile alinir (bkz.
+            # kalibrasyon_ozet notu).
+            "kalibrasyon": self.kalibrasyon_ozet(),
             "calisiyor": self.calisiyor,
             "program": {
                 "yol": self.program_yol,
@@ -598,13 +609,13 @@ class Denetleyici:
         for s in satirlar:
             b.kod(s)
 
-    def jog_adim(self, eksen, mesafe, feed=None, istemci=None):
+    def jog_adim(self, eksen, mesafe, feed=None, hizli=None, istemci=None):
         """Bagil (artimli) tek adim: 'X ekseninde sola 25 mm git'."""
         self.kilit.dogrula(istemci)
         eksen = eksen.upper()
         self._referans_gerekli([eksen])
-        feed = float(feed or min(self.ayarlar["guvenlik"]["max_jog_feed"],
-                                 1500.0))
+        feed = float(feed) if feed else self.jog_feed(bool(hizli))
+        feed = min(feed, float(self.ayarlar["guvenlik"]["max_jog_feed"]))
         self.guvenlik.jog_dogrula(eksen, float(mesafe), feed,
                                   self._tezgah, self._konum)
         self._mdi("G91", f"G1 {eksen}{mesafe:.4f} F{feed:.1f}", "G90")
@@ -653,57 +664,188 @@ class Denetleyici:
         return {"z": gz}
 
     # -- surekli jog ------------------------------------------------------
-    def jog_basla(self, eksen, yon, feed=None, istemci=None):
+    # Mach3'un COM arayuzunde gercek bir "surekli jog" cagrisi yoktur; hareket
+    # kisa artimli adimlarin ZINCIRLENMESIYLE uretilir. Hissiyati Mach3'e
+    # yaklastiran uc ayrinti:
+    #
+    #   1. Adim, bir sonraki adim gelene kadar BITMEMELI. Eskiden adim 5 mm
+    #      ile siniriydi: 4000 mm/dk'da 5 mm 0.075 sn surer ama zincir 0.15
+    #      sn'de bir gelirdi -> eksen her adim arasinda duruyordu ("tik tik").
+    #      Artik adim = feed/60 * tik * ortusme ile hesaplanir.
+    #   2. Her adim TEK MDI satiri olmali. Eskiden "G91" + "G1 ..." + "G90"
+    #      diye UC COM cagrisi gidiyordu; her cagri bir tur gecikme demektir.
+    #      Artik G91 basta bir kez, G90 sonda bir kez gonderilir.
+    #   3. Birakinca kuyrukta kalan adimlar Mach3'un Feed Hold + Stop'uyla
+    #      bosaltilir; yoksa parmagi cektikten sonra eksen bir sure daha
+    #      "kayar". Feed Hold, Mach3'un kendi yavaslama rampasini kullanir -
+    #      sert kesme olmadigi icin adim kaybi riski dogmaz.
+    def _jog_ayari(self):
+        g = self.ayarlar["guvenlik"]
+        return (max(float(g.get("jog_tik_ms", 80)), 20.0) / 1000.0,
+                max(float(g.get("jog_ortusme", 1.35)), 1.0),
+                bool(g.get("jog_birakinca_durdur", True)))
+
+    def jog_feed(self, hizli=False):
+        """Yon tusu (yavas) / Shift+yon (hizli) beslemesi, sinirla kirpilmis."""
+        g = self.ayarlar["guvenlik"]
+        f = float(g.get("jog_hizli_feed", 4000.0) if hizli
+                  else g.get("jog_yavas_feed", 600.0))
+        return max(min(f, float(g.get("max_jog_feed", 6000.0))), 1.0)
+
+    def jog_basla(self, eksen, yon, feed=None, hizli=None, istemci=None):
         """Basili tut - birak jogu.
 
-        Mach3'un COM arayuzunde guvenilir bir 'surekli jog' cagrisi yoktur;
-        bu yuzden KISA artimli adimlar zincirlenir. Her adim ayri ayri
-        guvenlik denetiminden gecer ve istemcinin kalp atisi kesilirse zincir
-        aninda durur (olu adam butonu).
+        `hizli` verilirse besleme ayarlardan alinir (Shift kipi); `feed`
+        verilirse dogrudan o kullanilir. Her adim ayri ayri guvenlik
+        denetiminden gecer ve istemcinin kalp atisi kesilirse zincir aninda
+        durur (olu adam butonu).
         """
         self.kilit.dogrula(istemci)
+        if self.calisiyor:
+            # Program calisirken jog hem anlamsiz hem tehlikelidir; ayrica
+            # birakinca gonderilen Feed Hold/Stop programi da keserdi.
+            raise GUV.GuvenlikHatasi(
+                "Program calisirken jog yapilamaz. Once programi durdurun.")
         eksen, yon = eksen.upper(), (1 if yon >= 0 else -1)
         self._referans_gerekli([eksen])
-        feed = float(feed or 1000.0)
-        max_feed = float(self.ayarlar["guvenlik"]["max_jog_feed"])
-        feed = min(feed, max_feed)
+        if feed is None:
+            feed = self.jog_feed(bool(hizli))
+        feed = min(float(feed), float(self.ayarlar["guvenlik"]["max_jog_feed"]))
         self.jog_bitir()
         self._jog_dur.clear()
+        self._jog_feed = feed
         self.bekci.baslat()
         self.jog_bilgi = {"aktif": True, "eksen": eksen, "yon": yon,
-                          "feed": feed}
+                          "feed": feed, "hizli": bool(hizli)}
         self._jog_is = threading.Thread(
-            target=self._jog_dongu, args=(eksen, yon, feed), daemon=True,
+            target=self._jog_dongu, args=(eksen, yon), daemon=True,
             name="jog")
         self._jog_is.start()
         self.gunluk.ekle("hareket", f"Surekli jog basladi {eksen}{yon:+d} "
-                                    f"@F{feed:.0f}")
-        return {"eksen": eksen, "yon": yon, "feed": feed}
+                                    f"@F{feed:.0f}"
+                                    + (" (hizli)" if hizli else ""))
+        return {"eksen": eksen, "yon": yon, "feed": feed,
+                "hizli": bool(hizli)}
 
-    def _jog_dongu(self, eksen, yon, feed):
-        periyot = 0.15
-        adim = max(min(feed / 60.0 * periyot * 1.4, 5.0), 0.05)
-        while not self._jog_dur.is_set() and self.bekci.aktif:
-            try:
-                self.guvenlik.jog_dogrula(eksen, yon * adim, feed,
-                                          self._tezgah, self._konum)
-                self._mdi("G91", f"G1 {eksen}{yon * adim:.4f} F{feed:.1f}",
-                          "G90")
-            except GUV.GuvenlikHatasi as e:
-                self.gunluk.ekle("guvenlik",
-                                 f"Jog durduruldu: {'; '.join(e.sebepler)}")
-                break
-            except Exception as e:                    # noqa: BLE001
-                self.gunluk.ekle("hata", f"Jog hatasi: {e}")
-                break
-            time.sleep(periyot)
-        self.jog_bilgi = {"aktif": False, "eksen": None, "yon": 0}
-        self.bekci.bitir()
+    def jog_hiz(self, feed=None, hizli=None, istemci=None):
+        """Suren jogun beslemesini degistirir (tus basiliyken Shift'e basmak).
+
+        Jogu kesip yeniden baslatmak, zinciri bosaltip eksenin bir an
+        durmasina yol acardi; bunun yerine calisan dongu bir sonraki adimda
+        yeni beslemeyi kullanir.
+        """
+        self.kilit.dogrula(istemci)
+        if feed is None:
+            feed = self.jog_feed(bool(hizli))
+        feed = min(float(feed), float(self.ayarlar["guvenlik"]["max_jog_feed"]))
+        self._jog_feed = max(feed, 1.0)
+        if self.jog_bilgi.get("aktif"):
+            self.jog_bilgi["feed"] = self._jog_feed
+            self.jog_bilgi["hizli"] = bool(hizli)
+        return {"feed": self._jog_feed, "hizli": bool(hizli)}
+
+    def _jog_dongu(self, eksen, yon):
+        periyot, ortusme, _ = self._jog_ayari()
+        max_adim = float(self.ayarlar["guvenlik"].get("max_jog_adim", 100.0))
+        b = self.baglanti
+        g91 = False
+        # GONDERILMIS AMA HENUZ OKUNMAMIS MESAFE
+        # DRO yoklamasi 10 Hz'dir, yani konum 100 ms'ye kadar geriden gelir.
+        # Adimlar artik uzun oldugu icin (hizli jogda ~7 mm) o sure iginde
+        # gonderilen iki-uc adim, limit denetimi "hala iceridesin" derken
+        # sinirin disina tasabilir. Bu yuzden denetim, okunan konuma degil
+        # GONDERDIGIMIZ (taahhut edilen) konuma gore yapilir; yoklama daha
+        # ileriyi gosterirse ondan devam edilir.
+        taahhut = None
         try:
-            if self.bagli:
-                self.baglanti.jog_durdur()
+            while not self._jog_dur.is_set() and self.bekci.aktif:
+                feed = self._jog_feed
+                # Adim, bir sonraki adim gelene kadar bitmeyecek kadar uzun
+                # olmali; yoksa eksen adimlar arasinda duraklar.
+                adim = min(max(feed / 60.0 * periyot * ortusme, 0.02),
+                           max_adim)
+                ileri = (max if yon > 0 else min)
+                okunan_t = self._tezgah.get(eksen)
+                okunan_i = self._konum.get(eksen)
+                if okunan_t is None:
+                    taahhut = None
+                elif taahhut is None:
+                    taahhut = (okunan_t, okunan_i)
+                else:
+                    taahhut = (ileri(taahhut[0], okunan_t),
+                               taahhut[1] if okunan_i is None
+                               else ileri(taahhut[1], okunan_i))
+                d_tezgah, d_konum = self._tezgah, self._konum
+                if taahhut is not None:
+                    d_tezgah = dict(d_tezgah)
+                    d_tezgah[eksen] = taahhut[0]
+                    if taahhut[1] is not None:
+                        d_konum = dict(d_konum)
+                        d_konum[eksen] = taahhut[1]
+                try:
+                    self.guvenlik.jog_dogrula(eksen, yon * adim, feed,
+                                              d_tezgah, d_konum)
+                    if not g91:
+                        self._mdi("G91")
+                        g91 = True
+                    self._mdi(f"G1 {eksen}{yon * adim:.4f} F{feed:.1f}")
+                    if taahhut is not None:
+                        taahhut = (taahhut[0] + yon * adim,
+                                   None if taahhut[1] is None
+                                   else taahhut[1] + yon * adim)
+                except GUV.GuvenlikHatasi as e:
+                    self.gunluk.ekle(
+                        "guvenlik", f"Jog durduruldu: {'; '.join(e.sebepler)}")
+                    break
+                except Exception as e:                # noqa: BLE001
+                    self.gunluk.ekle("hata", f"Jog hatasi: {e}")
+                    break
+                time.sleep(periyot)
+        finally:
+            self.jog_bilgi = {"aktif": False, "eksen": None, "yon": 0}
+            self.bekci.bitir()
+            self._jog_sonlandir(b, g91)
+
+    def _jog_sonlandir(self, b, g91):
+        """Kuyrugu bosalt ve modal durumu (G90) MUTLAKA geri getir.
+
+        G91 acik unutulursa sonraki her mutlak komut artimli calisir; bu,
+        makineyi bambaska bir yere goturur. Bu yuzden hata olsa da G90
+        gonderilir.
+        """
+        _, _, birakinca_durdur = self._jog_ayari()
+        if not (b and getattr(b, "bagli", False)):
+            return
+        try:
+            b.jog_durdur()
         except Exception:                             # noqa: BLE001
             pass
+        if birakinca_durdur:
+            try:
+                # Feed Hold: Mach3'un kendi yavaslama rampasi (adim kaybi yok)
+                b.dugme(self.kodlar.buton["feed_hold"])
+                bitis = time.time() + 0.6
+                while time.time() < bitis:
+                    try:
+                        if not b.hareket_ediyor():
+                            break
+                    except Exception:                 # noqa: BLE001
+                        break
+                    time.sleep(0.03)
+                # Stop: kuyrukta kalan adimlari at, hold durumundan cik
+                b.dugme(self.kodlar.buton["stop"])
+            except Exception as e:                    # noqa: BLE001
+                self.gunluk.ekle("hata", f"Jog durdurma: {e}")
+        if g91:
+            for _ in range(3):
+                try:
+                    b.kod("G90")
+                    return
+                except Exception:                     # noqa: BLE001
+                    time.sleep(0.1)
+            self.gunluk.ekle(
+                "hata", "DIKKAT: jog sonrasi G90 gonderilemedi; Mach3 hala "
+                        "ARTIMLI (G91) kipte olabilir. MDI'dan G90 yazin.")
 
     def jog_kalp(self, istemci=None):
         """Istemci 'hala basiliyim' der. Kesilirse hareket durur."""
@@ -714,7 +856,7 @@ class Denetleyici:
         self._jog_dur.set()
         self.bekci.bitir()
         if self._jog_is and self._jog_is.is_alive():
-            self._jog_is.join(timeout=1.0)
+            self._jog_is.join(timeout=1.5)
         self.jog_bilgi = {"aktif": False, "eksen": None, "yon": 0}
         return True
 
@@ -907,6 +1049,395 @@ class Denetleyici:
         return {"ok": True}
 
     # ==================================================================
+    # Kalibrasyon (dijital kumpasla)
+    # ==================================================================
+    # Mach3'un COM arayuzunde "Steps per unit" ve "Backlash" degerlerini
+    # OKUYAN YA DA YAZAN BIR CAGRI YOKTUR; bu ayarlar Mach3'un profil
+    # dosyasinda durur ve yalnizca Mach3'un kendi pencerelerinden
+    # degistirilebilir. Bu yuzden buradaki is bolusumu sudur:
+    #
+    #   program  -> hareketi yapar, olcumu toplar, yeni degeri hesaplar,
+    #               Mach3'te HANGI KUTUYA NE yazilacagini soyler
+    #   operator -> degeri Mach3'e yazar ve "girdim" der
+    #
+    # Her kalibrasyon hareketi normal jog gibi guvenlik katmanindan gecer:
+    # yumusak limit, tezgah tabani, adim/besleme siniri ve referans zorunlu.
+    def kalibrasyon_ayari(self):
+        k = dict(self.ayarlar.get("kalibrasyon") or {})
+        k.setdefault("adim_basi", {})
+        k.setdefault("bosluk", {})
+        k.setdefault("olcum_mesafe", 100.0)
+        k.setdefault("olcum_feed", 300.0)
+        k.setdefault("on_yaklasma", 5.0)
+        k.setdefault("tekrar", 3)
+        k.setdefault("kumpas_cozunurluk", 0.01)
+        k.setdefault("gecmis", [])
+        return k
+
+    def kalibrasyon_durum(self):
+        k = self.kalibrasyon_ayari()
+        return {
+            "ayar": {a: k[a] for a in (
+                "adim_basi", "bosluk", "olcum_mesafe", "olcum_feed",
+                "on_yaklasma", "tekrar", "kumpas_cozunurluk")},
+            "gecmis": k.get("gecmis", [])[-20:],
+            "oturum": self.kalib.durum() if self.kalib else None,
+            "son_sonuc": self.kalib_son,
+            # Arayuz, olcum mesafesinin jog sinirina sigip sigmadigini
+            # kullaniciya ONCEDEN gosterebilsin.
+            "max_jog_adim": self.ayarlar["guvenlik"].get("max_jog_adim"),
+            "max_jog_feed": self.ayarlar["guvenlik"].get("max_jog_feed"),
+        }
+
+    def kalibrasyon_ozet(self):
+        """Olay akisina giren KUCUK ozet.
+
+        NEDEN: tam durum (olcum sonucu + Mach3 talimati + gecmis) birkac
+        kilobayttir; ~8 Hz'de surekli yollamak telefondaki baglantiyi bosuna
+        doldurur. Akista yalnizca sihirbazin canli kalmasi icin gerekenler
+        gider; arayuz burada bir degisiklik gorunce tam durumu ayrica ister.
+        """
+        o = self.kalib
+        k = self.kalibrasyon_ayari()
+        return {
+            # Ayar degisirse (baska bir istemci kaydetmis olabilir) arayuz
+            # tazelensin diye kucuk bir imza tasinir.
+            "ayar_ozet": [k.get("adim_basi"), k.get("bosluk")],
+            "sonuc_var": bool(self.kalib_son or (o and o.olcumler)),
+            "oturum": None if not o else {
+                "aktif": o.asama != KAL.BITTI,
+                "eksen": o.eksen, "tur": o.tur, "asama": o.asama,
+                "mesgul": o.mesgul, "yonerge": o.yonerge(),
+                "komut_mm": o.komut_mm, "yon": o.yon,
+                "on_yaklasma": o.on_yaklasma,
+                "tekrar": o.tekrar, "alinan": len(o.olcumler),
+                "olcumler": [round(x["olculen"], 4) for x in o.olcumler],
+                "hata": o.hata,
+            },
+        }
+
+    def _kalib_oturum(self):
+        if not self.kalib:
+            raise GUV.GuvenlikHatasi("Acik bir kalibrasyon oturumu yok")
+        if self.kalib.mesgul:
+            raise GUV.GuvenlikHatasi(
+                "Kalibrasyon hareketi surerken islem yapilamaz; eksenin "
+                "durmasini bekleyin.")
+        return self.kalib
+
+    def kalibrasyon_basla(self, eksen, tur="olcek", mesafe=None, feed=None,
+                          yon=1, on_yaklasma=None, tekrar=None,
+                          adim_basi=None, istemci=None):
+        self.kilit.dogrula(istemci)
+        self._gerekli()
+        self._dururken("Kalibrasyon")
+        if self.kalib and self.kalib.mesgul:
+            raise GUV.GuvenlikHatasi(
+                "Onceki kalibrasyon hareketi hala suruyor.")
+        k = self.kalibrasyon_ayari()
+        eksen = str(eksen).upper()
+        self._referans_gerekli([eksen])
+        if adim_basi is None:
+            adim_basi = (k.get("adim_basi") or {}).get(eksen)
+        try:
+            o = KAL.Oturum(
+                eksen, tur,
+                komut_mm=(k["olcum_mesafe"] if mesafe is None else mesafe),
+                feed=(k["olcum_feed"] if feed is None else feed),
+                yon=yon,
+                on_yaklasma=(k["on_yaklasma"] if on_yaklasma is None
+                             else on_yaklasma),
+                tekrar=(k["tekrar"] if tekrar is None else tekrar),
+                adim_basi=adim_basi,
+                cozunurluk=k["kumpas_cozunurluk"])
+        except ValueError as e:
+            raise GUV.GuvenlikHatasi(str(e))
+
+        # En uzun tek hareket, jog adim sinirina sigmali. Bunu burada
+        # soylemek, olcumun ortasinda "adim cok buyuk" hatasi almaktan
+        # (ve makineyi yarim yolda birakmaktan) iyidir.
+        en_uzun = max(abs(m) for ad in ("bosluk_al", "olc", "geri")
+                      for _, m, _ in o.hareket_plani(ad))
+        max_adim = float(self.ayarlar["guvenlik"].get("max_jog_adim", 100.0))
+        if en_uzun > max_adim + 1e-9:
+            raise GUV.GuvenlikHatasi(
+                f"Kalibrasyon icin gereken en uzun hareket {en_uzun:.1f} mm, "
+                f"izin verilen en buyuk jog adimi {max_adim:.1f} mm. Olcum "
+                "mesafesini kucultun ya da Guvenlik sekmesinden 'En buyuk "
+                "jog adimi' degerini yukseltin.")
+        max_feed = float(self.ayarlar["guvenlik"].get("max_jog_feed", 6000.0))
+        if o.feed > max_feed + 1e-9:
+            raise GUV.GuvenlikHatasi(
+                f"Olcum beslemesi {o.feed:.0f} mm/dk, ust sinir "
+                f"{max_feed:.0f} mm/dk.")
+
+        self.kalib = o
+        self.kalib_son = None
+        self.gunluk.ekle(
+            "kalibrasyon",
+            f"Oturum basladi: {eksen} / {tur} / {o.komut_mm:g} mm "
+            f"@F{o.feed:.0f} x{o.tekrar}")
+        return self.kalibrasyon_durum()
+
+    # Hangi adim hangi asamada yapilabilir (yanlis sirada hareket, olcumu
+    # sessizce bozar - bu yuzden acikca reddedilir).
+    _KALIB_IZIN = {"bosluk_al": (KAL.HAZIR,),
+                   "olc": (KAL.OKUMA_A,),
+                   "geri": (KAL.TEKRAR,)}
+
+    def kalibrasyon_adim(self, ad, istemci=None):
+        """Kalibrasyon hareketini baslatir (arka planda yurur)."""
+        self.kilit.dogrula(istemci)
+        o = self._kalib_oturum()
+        izin = self._KALIB_IZIN.get(ad)
+        if izin is None:
+            raise GUV.GuvenlikHatasi(f"Bilinmeyen kalibrasyon adimi: {ad}")
+        if o.asama not in izin:
+            raise GUV.GuvenlikHatasi(
+                f"'{ad}' bu asamada yapilamaz (su anki asama: {o.asama}). "
+                "Ekrandaki yonergeyi izleyin.")
+        self._gerekli()
+        self._dururken("Kalibrasyon hareketi")
+        plan = o.hareket_plani(ad)
+        o.hata = ""
+        o.mesgul = True
+        o.asama = KAL.HAREKET
+        self._kalib_is = threading.Thread(
+            target=self._kalibrasyon_yurut, args=(o, ad, plan, istemci),
+            daemon=True, name="kalibrasyon")
+        self._kalib_is.start()
+        return self.kalibrasyon_durum()
+
+    def _kalibrasyon_yurut(self, o, ad, plan, istemci):
+        sonraki = {"bosluk_al": KAL.OKUMA_A, "olc": KAL.OKUMA_B,
+                   "geri": KAL.OKUMA_A}[ad]
+        try:
+            for eksen, mesafe, feed in plan:
+                self.jog_adim(eksen, mesafe, feed, istemci=istemci)
+                self._hareket_bitmesini_bekle(
+                    abs(mesafe) / max(feed, 1.0) * 60.0)
+            o.asama = sonraki
+        except Exception as e:                        # noqa: BLE001
+            # Cok adimli bir plan yarida kalmis olabilir; konum artik
+            # bilinmiyor sayilir. Guvenli olan, boslugu bastan almaktir.
+            # Sebepler olmadan "Jog reddedildi" demek operatoru cozumsuz
+            # birakir; hangi limitin asildigi yaziya eklenir.
+            sebepler = [s for s in getattr(e, "sebepler", []) if s != str(e)]
+            o.hata = str(e) + (" — " + "; ".join(sebepler) if sebepler else "")
+            o.asama = KAL.HAZIR
+            self.gunluk.ekle("hata", f"Kalibrasyon hareketi durdu: {e}")
+        finally:
+            o.mesgul = False
+
+    def _hareket_bitmesini_bekle(self, tahmini_sn, ek_sn=20.0):
+        """Eksen duruncaya kadar bekler.
+
+        NEDEN: kumpas okumasi, eksen tam durmadan alinirsa anlamsizdir.
+        `IsMoving` desteklenmiyorsa (bazi Mach3 surumleri) hareketin
+        hesaplanan suresi kadar beklenir - tahmin, hic beklememekten iyidir.
+        """
+        time.sleep(0.35)                    # hareketin baslamasina pay
+        b = self.baglanti
+        try:
+            h = b.hareket_ediyor() if b else None
+        except Exception:                             # noqa: BLE001
+            h = None
+        if h is None:
+            time.sleep(max(float(tahmini_sn), 0.0) + 1.5)
+            return "sure"
+        bitis = time.time() + float(tahmini_sn) + ek_sn
+        durgun = 0
+        while time.time() < bitis:
+            try:
+                h = b.hareket_ediyor()
+            except Exception:                         # noqa: BLE001
+                h = None
+            # IsMoving hareketin basinda birkac kare titreyebilir; ust uste
+            # uc "durgun" okumasi aranir.
+            durgun = 0 if h else durgun + 1
+            if durgun >= 3:
+                return "hareket"
+            time.sleep(0.1)
+        raise GUV.GuvenlikHatasi(
+            "Kalibrasyon hareketi beklenen surede bitmedi; eksen hala "
+            "hareket ediyor gorunuyor. Olcum iptal edildi.")
+
+    def kalibrasyon_bekle(self, zaman_asimi=60.0):
+        """Suren kalibrasyon hareketinin bitmesini bekler (test/API icin)."""
+        if self._kalib_is and self._kalib_is.is_alive():
+            self._kalib_is.join(timeout=zaman_asimi)
+        return self.kalibrasyon_durum()
+
+    def kalibrasyon_olcum(self, olculen=None, a=None, b=None, istemci=None):
+        """Kumpas okumasini kaydeder (mesafe ya da iki okuma)."""
+        self.kilit.dogrula(istemci)
+        o = self._kalib_oturum()
+        if o.asama != KAL.OKUMA_B:
+            raise GUV.GuvenlikHatasi(
+                "Once olcum hareketini yapin; okuma ancak hareket bittikten "
+                "sonra girilebilir.")
+        try:
+            kayit = o.ekle_olcum(olculen, a, b)
+        except ValueError as e:
+            raise GUV.GuvenlikHatasi(str(e))
+        self.gunluk.ekle(
+            "kalibrasyon",
+            f"Olcum {len(o.olcumler)}/{o.tekrar}: {o.eksen} "
+            f"{kayit['olculen']:.3f} mm (komut {o.komut_mm:g} mm)")
+        if o.asama == KAL.BITTI:
+            self.kalib_son = o.sonuc()
+            self._kalibrasyon_sonucu_gunlukle()
+        return self.kalibrasyon_durum()
+
+    def kalibrasyon_bitir(self, istemci=None):
+        """Kalan tekrarlari beklemeden sonuca gecer."""
+        self.kilit.dogrula(istemci)
+        o = self._kalib_oturum()
+        if not o.olcumler:
+            raise GUV.GuvenlikHatasi("Henuz hicbir olcum alinmadi")
+        o.bitir()
+        self.kalib_son = o.sonuc()
+        self._kalibrasyon_sonucu_gunlukle()
+        return self.kalibrasyon_durum()
+
+    def _kalibrasyon_sonucu_gunlukle(self):
+        s = self.kalib_son or {}
+        if s.get("tur") == "bosluk":
+            self.gunluk.ekle(
+                "kalibrasyon",
+                f"SONUC {s['eksen']} bosluk = {s['bosluk_mm']:.4f} mm "
+                f"({s['olcum_sayisi']} olcum)")
+        else:
+            self.gunluk.ekle(
+                "kalibrasyon",
+                f"SONUC {s.get('eksen')} sapma {s.get('hata_mm'):+.4f} mm / "
+                f"{s.get('komut_mm')} mm · carpan {s.get('carpan')} · "
+                f"yeni adim/mm {s.get('yeni_adim_basi')}")
+
+    def kalibrasyon_iptal(self, istemci=None):
+        self.kilit.dogrula(istemci)
+        if self.kalib and self.kalib.mesgul:
+            raise GUV.GuvenlikHatasi(
+                "Hareket surerken oturum kapatilamaz; once ACIL DURDUR.")
+        self.kalib = None
+        self.gunluk.ekle("kalibrasyon", "Oturum iptal edildi")
+        return self.kalibrasyon_durum()
+
+    def kalibrasyon_uygula(self, deger=None, istemci=None):
+        """Operator degeri Mach3'e yazdi: kaydet, gecmise isle, uyar.
+
+        Adim sayisi degistiginde Mach3'un MAKINE koordinati da olcek
+        degistirir; onceki tezgah referansi artik yanlistir ve MUTLAKA
+        dusurulur (yoksa yumusak limitler eski olcekten korur).
+        """
+        self.kilit.dogrula(istemci)
+        s = self.kalib_son or (self.kalib.sonuc() if self.kalib else None)
+        if not s:
+            raise GUV.GuvenlikHatasi("Uygulanacak bir kalibrasyon sonucu yok")
+        eksen = s["eksen"]
+        k = self.kalibrasyon_ayari()
+        uyarilar = []
+
+        if s["tur"] == "bosluk":
+            bosluk = dict(k.get("bosluk") or {})
+            bosluk[eksen] = s["bosluk_mm"]
+            self.ayarlar.guncelle({"kalibrasyon": {"bosluk": bosluk}})
+            kayit_deger = s["bosluk_mm"]
+        elif s["tur"] == "dogrulama":
+            kayit_deger = None
+        else:
+            yeni = s.get("yeni_adim_basi") if deger is None else deger
+            if yeni is None:
+                raise GUV.GuvenlikHatasi(
+                    "Yeni adim sayisi hesaplanamadi (mevcut 'Steps per' "
+                    "degeri girilmemis). Mach3'e yazdiginiz degeri "
+                    "'deger' alanina girin ya da mevcut adim sayisini "
+                    "kaydedip olcumu tekrarlayin.")
+            try:
+                yeni = float(yeni)
+            except (TypeError, ValueError):
+                raise GUV.GuvenlikHatasi("Adim sayisi sayi olmali")
+            if yeni <= 0:
+                raise GUV.GuvenlikHatasi("Adim sayisi sifirdan buyuk olmali")
+            adim = dict(k.get("adim_basi") or {})
+            adim[eksen] = round(yeni, 4)
+            self.ayarlar.guncelle({"kalibrasyon": {"adim_basi": adim}})
+            kayit_deger = round(yeni, 4)
+            # Olcek degisti: makine koordinati da degisti.
+            self.referans[eksen] = None
+            self._tezgah[eksen] = None
+            self.referans_zaman = None
+            uyarilar.append(
+                f"{eksen} ekseninin tezgah referansi dusuruldu: adim sayisi "
+                "degisince makine koordinatinin olcegi de degisir. Yeniden "
+                "referans alin.")
+            uyarilar.append(
+                "Yumusak limitleri ve tezgah tabanini bu eksende yeniden "
+                "dogrulayin; eski degerler eski olcege gore olculmustu.")
+            uyarilar.append(
+                "Degisikligin gercekten islendigini gormek icin ayni eksende "
+                "'Dogrulama' olcumu yapin.")
+
+        gecmis = list(k.get("gecmis") or [])
+        gecmis.append({
+            "zaman": time.time(), "eksen": eksen, "tur": s["tur"],
+            "komut_mm": s.get("komut_mm"), "olculen_ort": s.get("olculen_ort"),
+            "hata_mm": s.get("hata_mm"), "carpan": s.get("carpan"),
+            "eski": s.get("eski_adim_basi"), "yeni": kayit_deger,
+            "olcum_sayisi": s.get("olcum_sayisi"),
+        })
+        self.ayarlar.guncelle({"kalibrasyon": {"gecmis": gecmis[-100:]}})
+        self.gunluk.ekle(
+            "kalibrasyon",
+            f"UYGULANDI: {eksen} / {s['tur']} -> {kayit_deger} "
+            "(Mach3'e operator tarafindan yazildi)")
+        self.kalib = None
+        return {"ok": True, "uyarilar": uyarilar,
+                "kalibrasyon": self.kalibrasyon_durum()}
+
+    def kalibrasyon_ayar_kaydet(self, yama, istemci=None):
+        """Mach3'ten okunan guncel degerleri ve olcum tercihlerini kaydeder."""
+        self.kilit.dogrula(istemci)
+        temiz = {}
+        for alan in ("adim_basi", "bosluk"):
+            if alan not in (yama or {}):
+                continue
+            d = {}
+            for e, v in (yama[alan] or {}).items():
+                e = str(e).upper()
+                if e not in EKSENLER:
+                    continue
+                if v in (None, ""):
+                    d[e] = None
+                    continue
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    raise GUV.GuvenlikHatasi(f"{alan}.{e} sayi olmali")
+                if f < 0:
+                    raise GUV.GuvenlikHatasi(f"{alan}.{e} negatif olamaz")
+                d[e] = f
+            temiz[alan] = d
+        for alan in ("olcum_mesafe", "olcum_feed", "on_yaklasma",
+                     "kumpas_cozunurluk"):
+            if alan in (yama or {}):
+                try:
+                    f = float(yama[alan])
+                except (TypeError, ValueError):
+                    raise GUV.GuvenlikHatasi(f"{alan} sayi olmali")
+                if f <= 0:
+                    raise GUV.GuvenlikHatasi(f"{alan} sifirdan buyuk olmali")
+                temiz[alan] = f
+        if "tekrar" in (yama or {}):
+            temiz["tekrar"] = max(1, min(int(yama["tekrar"]), 20))
+        if temiz:
+            self.ayarlar.guncelle({"kalibrasyon": temiz})
+            self.gunluk.ekle("kalibrasyon",
+                             "Kalibrasyon ayarlari kaydedildi: "
+                             + ", ".join(sorted(temiz)))
+        return self.kalibrasyon_durum()
+
+    # ==================================================================
     # Besleme override (FRO)
     # ==================================================================
     def fro_ayarla(self, deger=None, delta=None, istemci=None):
@@ -1005,6 +1536,9 @@ class Denetleyici:
             "sure": self.program_sure,
             "header": len(self.program.header),
             "footer": len(self.program.footer),
+            # Onizleme bilgi seridi: kesim alani, tum hareket zarfi ve
+            # is sifirina (X0 Y0) gore konum
+            "olcu": self.program.olculer(),
         }
 
     def blok_sec(self, index):
