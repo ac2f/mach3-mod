@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Takım yolu önizlemesi — Mach3-Kontrol</title>
+<link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="/mach3.css">
+</head>
+<body class="oz-pencere">
+
+<!-- Ayrı (tam ekrana alınabilen) önizleme penceresi.
+     Ana pencereyle aynı sunucudan canlı beslenir; katman ayarları ana pencereyle
+     eşitlenir. ACİL DURDUR burada da vardır: tam ekran ana pencerenin ustundekini örter. -->
+<div class="m3 oz-tam" id="ozPencere">
+  <div class="oz-ust">
+    <span class="oz-baslik" id="ozAd">Önizleme</span>
+    <span class="oz-durum" id="ozDurum">bağlanıyor…</span>
+    <span class="oz-ust-sag">
+      <span class="oz-arac" data-oz="#ozKap" data-tam="#ozPencere" data-cip="#ozCip"
+            data-btn="m3-tus kucuk" data-pencere="0"></span>
+      <button type="button" class="m3-tus kucuk oz-acil-pencere" id="ozAcil"
+              title="Her şeyi durdur">ACİL DURDUR</button>
+    </span>
+  </div>
+  <div class="oz-katmanlar" id="ozCip" aria-label="Önizlemede gösterilecekler"></div>
+  <div class="onizleme" id="ozKap">
+    <div class="bos-mesaj">Ana pencerede bir G-Code dosyası açın.</div>
+  </div>
+  <div class="olcu-serit" id="ozBilgi"></div>
+  <div class="oz-ipucu">
+    <kbd>F</kbd> tam ekran · tekerlek yakınlaştır · sürükle kaydır · çift tık sığdır
+    · katmanlar ana pencereyle eşitlenir
+  </div>
+</div>
+
+<script src="/onizleme.js"></script>
+<script src="/onizleme_pencere.js"></script>
+</body>
+</html>

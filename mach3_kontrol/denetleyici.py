@@ -665,6 +665,7 @@ class Denetleyici:
             "hareket": self._ek.get("hareket"),
             # Reset/E-Stop: bu durumdayken DRO yazma (sifirlama) calismaz
             "estop": self._ek.get("estop"),
+            "sinir_is": self.sinir_is(),
             "yoklama_yasi": (round(time.time() - self._son_yoklama, 2)
                              if self._son_yoklama else None),
             "jog": self.jog.durum(),
@@ -1921,6 +1922,39 @@ class Denetleyici:
                                                  self.secili_blok)
         self.blok_sureler = SURE.blok_tahminleri(self.program, mak, ay, f)
 
+    def _vektorler(self):
+        """Program icin vektor siralamasi (ayar degisince yeniden hesaplanir)."""
+        gz = float(self.ayarlar["guvenlik"].get("guvenli_z", 20.0))
+        anahtar = (id(self.program), gz)
+        onbellek = getattr(self, "_vektor_onbellek", None)
+        if onbellek and onbellek[0] == anahtar:
+            return onbellek[1]
+        v = self.program.vektorler(gz)
+        self._vektor_onbellek = (anahtar, v)
+        return v
+
+    def sinir_is(self):
+        """Tezgah sinirlari (yumusak limitler) IS koordinatinda.
+
+        Onizleme, takim yolunun tezgahin her kenarina ne kadar yaklastigini
+        gostermek icin bunu kullanir. Is sifiri degistikce degisir:
+        is = tezgah - ofset. Referans/konum bilinmeyen eksen yoktur.
+        """
+        out = {}
+        if self.guvenlik.limitler_aktif():
+            for e in ("X", "Y", "Z"):
+                lim = self.guvenlik.limit(e)
+                aralik = self.guvenlik.limit_araligi(e)
+                t, i = self._tezgah.get(e), self._konum.get(e)
+                if not lim or not aralik or t is None or i is None:
+                    continue
+                o = t - i                    # tezgah = is + o
+                out[e] = [round(aralik[0] - o, 3), round(aralik[1] - o, 3)]
+        return {"aralik": out,
+                "pay": float(self.ayarlar["guvenlik"].get("limit_payi", 0.0)),
+                "dogrulandi": bool(self.ayarlar["guvenlik"]
+                                   .get("limitler_dogrulandi"))}
+
     def program_bilgi(self):
         if not self.program:
             return None
@@ -1944,6 +1978,8 @@ class Denetleyici:
             # Onizleme bilgi seridi: kesim alani, tum hareket zarfi ve
             # is sifirina (X0 Y0) gore konum
             "olcu": self.program.olculer(),
+            # Guvenli Z'ye her yukselisin kapattigi kesim parcalari (siralari)
+            "vektor": self._vektorler(),
         }
 
     def program_satirlari(self, bas=0, adet=3000):

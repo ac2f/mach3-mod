@@ -767,6 +767,8 @@ class Isleyici(BaseHTTPRequestHandler):
             return
         if yol == "/":
             yol = "/index.html"
+        elif yol == "/onizleme":
+            yol = "/onizleme.html"
         dosya = os.path.abspath(os.path.join(WEB_DIZIN, yol.lstrip("/")))
         try:
             icinde = os.path.commonpath([dosya, WEB_DIZIN]) == WEB_DIZIN

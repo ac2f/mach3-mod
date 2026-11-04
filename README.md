@@ -230,7 +230,7 @@ Step kipi ve doğrulanmamış durumlar her zaman artımlı sürücüyle yapılı
 | **HOME** | Adlandırılmış iş sıfırları: seç · Uygula · Uygula + git · Kaydet (aşağıda) |
 | **BESLEME** | FRO − / + / 100 (<kbd>F10</kbd>/<kbd>F11</kbd>) · F · S |
 | **MİL / SOĞUTMA** | CW/CCW/dur + devir · sel/sis/kapat |
-| **Takım yolu** | Kesim sırası numaralı, kesim alanı ölçüleri, **canlı takım konumu** |
+| **Takım yolu** | Katmanlı önizleme: vektör sırası, kenar boşlukları, canlı takım konumu (aşağıda) · katlanır · tam ekran · ayrı pencere |
 | **G-CODE** | Satır numaralı pencere; Mach3'ün *Current Line* DRO'suyla (816) **yürütülen satır vurgulanır** |
 | **JOG** | Jog ON/OFF · Cont/Step · Slow Jog Rate % · Step · ok düğmeleri · Shift |
 | **Alt** | Cycle Start · Feed Hold · Stop · Reset · Rewind · Single Block · Denetim · Başlat |
@@ -243,6 +243,43 @@ Home noktaları (adlandırılmış iş sıfırları) ve tezgâh referansı vard�
 
 Telefonda DRO ve jog üstte, takım yolu altta; jog düğmeleri büyür, Shift için
 ekran düğmesi vardır.
+
+---
+
+## Takım yolu önizlemesi
+
+Mach3 ekranında ve Program sekmesinde aynı önizleme vardır.
+
+* **Aç/kapat:** panel başlığındaki ▾ düğmesi önizlemeyi katlar (hatırlanır).
+* **Tam ekran (⛶)** ve **ayrı pencere (↗ Pencere):** ayrı pencere ikinci
+  monitöre taşınabilir; canlı takım konumunu ve programı sunucudan kendisi
+  alır. Gerçek tam ekran için pencerede <kbd>F</kbd>. Tam ekranda ana ekranın
+  üst çubuğu örtüldüğü için **her tam ekranda kendi ACİL DURDUR düğmesi** vardır.
+  Tarayıcı tam ekranı reddederse önizleme pencereyi kaplar.
+* **Katmanlar** (tek tıkla açılır/kapanır, tarayıcıda hatırlanır ve açık tüm
+  pencereler arasında **canlı eşitlenir**): kesim yolu · taşıma (G0) · blok no ·
+  **vektör sırası** · **Z geçişleri** · vektör uzunluğu · yön · **kenar
+  boşlukları** · G0 zarfı · tezgâh sınırı · kesim alanı · iş sıfırı · takım ·
+  ızgara. *hepsi / hiçbiri / varsayılan* kısayolları vardır.
+* Tekerlek yakınlaştırır, sürükleme kaydırır, **çift tık** yol ↔ tezgâhın tamamı
+  arasında geçer.
+
+**Vektör.** Takımın güvenli Z'nin **altına indiği andan tekrar güvenli Z'ye
+çıktığı ana** kadar olan yoldur; her güvenli Z yükselişi bir vektörü kapatır.
+Numaralar dosyadaki gerçek gezinme sırasıdır; *Z geçişleri* katmanı bir
+vektörün sonundan sonrakinin başına güvenli Z'deki geçişi oklu çizgiyle gösterir.
+(Blok kuralı — "X-Y'li G0 ile başlar" — bir blokta birden çok yükseliş olabilen
+dosyalarda daha kaba kalır; vektör her yükselişi ayırır.) Güvenli Z önce
+dosyadan bulunur (ilk `G0 Z…` hedefi; kısa "köprü" yükselişleri sayılmaz), yoksa
+Ayarlar'daki güvenli Z kullanılır. G91 içeren dosyalarda vektör çıkarılamaz.
+
+**Kenar boşlukları.** Takım yolunun (isteğe bağlı olarak G0 zarfının) dört
+kenarından — sol, sağ, alt, üst — **tezgâh sınırına kalan mesafe** çizilir ve
+alttaki şeritte yazılır. Tezgâh sınırı, yumuşak limitlerin (pay düşülmüş)
+**şu anki iş sıfırına göre** karşılığıdır: Home değiştirince boşluklar da
+değişir. 20 mm'nin altı sarı, **negatif kırmızı** ("AŞIYOR") görünür. Böylece
+malzemeyi ve Home'u yerleştirirken işin tezgâha sığıp sığmadığı program
+başlamadan görülür. Tezgâh referansı yoksa uyarı yazar.
 
 ---
 
@@ -454,6 +491,7 @@ mach3_kontrol/
 ├── guvenlik.py       # limitler, kalp atışı, kilit, günlük (arka plan yazıcı)
 ├── webapp.py         # bağımlılıksız web sunucusu + CSRF/DNS-rebinding koruması
 ├── web/              # index.html · app.css · mach3.css · app.js · ekran.js · home.js
+│                     # onizleme.js (paylaşılan çizici) · onizleme.html + onizleme_pencere.js (ayrı pencere)
 ├── ayarlar.py  gcode.py  sure.py  kalibrasyon.py  is_takip.py  rapor.py
 ├── izleyici.py  klavye_kilidi.py  tani.py  cli.py
 tests/  ornekler/

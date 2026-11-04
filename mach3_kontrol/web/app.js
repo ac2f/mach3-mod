@@ -155,8 +155,8 @@ function sekmeGec(ad) {
   if (ad === "rapor") raporCiz();
   if (ad === "kalibrasyon") { kalSecimCiz(); kalTazele(true); }
   // Onizleme gizliyken cizilirse SVG olculeri 0 olur; sekmeye gelince tazele
-  if (ad === "tezgah") { onizlemeCiz("#onizlemeMini"); if (typeof gkodCiz === "function") gkodCiz(true); }
-  if (ad === "program") onizlemeCiz();
+  if (ad === "tezgah" && typeof gkodCiz === "function") gkodCiz(true);
+  if (typeof ozGorunurYenile === "function") ozGorunurYenile();
 }
 $$(".sekme").forEach(b => b.onclick = () => sekmeGec(b.dataset.sekme));
 
@@ -177,6 +177,8 @@ async function acilDurdur(sebep = "arayuz") {
   catch (e) { bildir(e.message, "hata"); }
 }
 $("#acilBtn").onclick = () => acilDurdur("acil dugmesi");
+// Onizleme TAM EKRANDAYKEN ust bar gorunmez: panelin kendi ACIL DURDUR dugmesi
+$$("[data-acil]").forEach(b => b.onclick = () => acilDurdur("onizleme paneli"));
 $("#feedHoldBtn").onclick = () => calis(() => api("/api/feedhold"), "Feed hold");
 $("#devamBtn").onclick = () => calis(() => api("/api/devam"), "Devam");
 $("#durdurBtn").onclick = () => calis(() => api("/api/durdur"), "Durduruldu");
@@ -417,11 +419,9 @@ function programCiz(p) {
     blokSec(parseInt(el.dataset.i, 10)));
   blokIsaretle(p.secili_blok);
   sureCiz(p.sure);
-  olcuCiz(p);
-  onizlemeCiz();
   blokListeMiniCiz(p);
   tSureCiz(p.sure);
-  onizlemeCiz("#onizlemeMini");
+  ozProgram(p);                       // onizleme.js: tum onizlemeler
   $("#denetimKutu").textContent = "Once denetim yapin.";
   $("#onayKutu").checked = false;
   $("#baslatBtn").disabled = true;
@@ -436,9 +436,7 @@ async function blokSec(i) {
   blokMiniIsaretle(i);
   sureCiz(p.sure);
   tSureCiz(p.sure);
-  olcuCiz(p);
-  onizlemeCiz();
-  onizlemeCiz("#onizlemeMini");
+  ozProgram(p);
   $("#onayKutu").checked = false;
   $("#baslatBtn").disabled = true;
   $("#tBaslat").disabled = true;
@@ -473,165 +471,7 @@ function sureCiz(t) {
       Ayarlar > Sure kalibrasyonu ile ince ayar yapabilirsiniz.</div>`;
 }
 
-/* ---- kesim alani olculeri ----
-   "Parca ne kadar yer kaplayacak, is sifirina gore nerede duruyor" sorusu
-   malzemeyi baglamadan once yanitlanmali. Iki kapsam ayri gosterilir:
-   kesim alani (yalnizca kesim bloklari) ve tum hareket zarfi (G0 dahil) —
-   yumusak limitleri asan genelde ikincisidir. */
-function olcuCiz(p) {
-  const o = p && p.olcu;
-  const kutu = (v) => v == null ? "–" : v.toFixed(1);
-  ["#olcuSerit", "#olcuSeritMini"].forEach((sec) => {
-    const el = $(sec);
-    if (!el) return;
-    if (!o || !o.kesim) { el.innerHTML = ""; return; }
-    const k = o.kesim, t = o.tum, s = o.sifira_gore, z = o.z || {};
-    const oge = (ad, deger, ipucu = "") =>
-      `<span class="olcu-oge" title="${kacir(ipucu)}">
-         <i>${ad}</i><b>${deger}</b></span>`;
-    el.innerHTML =
-      oge("kesim alani",
-          `${kutu(k.genislik)} × ${kutu(k.yukseklik)} mm`,
-          "Yalnizca kesim bloklarinin kapladigi alan (yaylar dahil)") +
-      oge("X", `${kutu(k.x[0])} … ${kutu(k.x[1])}`, "Is koordinatinda X araligi") +
-      oge("Y", `${kutu(k.y[0])} … ${kutu(k.y[1])}`, "Is koordinatinda Y araligi") +
-      oge("en sag", `${kutu(s.sag)} mm`, "X0'a gore en uzak nokta") +
-      oge("en ust", `${kutu(s.ust)} mm`, "Y0'a gore en uzak nokta") +
-      oge("X0Y0'dan", `←${kutu(s.sol)} ↓${kutu(s.alt)} mm`,
-          "Parcanin sol-alt kosesinin is sifirina uzakligi") +
-      oge("kosegen", `${kutu(s.kosegen)} mm`, "Kesim alaninin kosegeni") +
-      oge("Z", `${kutu(z.min)} … ${kutu(z.max)}`, "En derin / en yuksek Z") +
-      oge("hareket zarfi", `${kutu(t.genislik)} × ${kutu(t.yukseklik)} mm`,
-          "Bosta (G0) gidisler dahil tum hareket alani — yumusak limitler "
-          + "bunu denetler");
-  });
-}
-
-/* ---- takim yolu onizlemesi ---- */
-/* Ayni cizim iki yerde kullanilir: Program sekmesindeki buyuk onizleme ve
-   Tezgah sekmesindeki tek-ekran onizlemesi. Gorunum (zoom/pan) durumu her
-   kap icin ayri tutulur, yoksa biri digerini kaydirir. */
-function onizlemeCiz(kapSecici = "#onizleme") {
-  const p = S.program;
-  const kap = $(kapSecici);
-  if (!kap) return;
-  if (!p || !p.bloklar.length) {
-    kap.innerHTML = `<div class="bos-mesaj">Dosya secin, kesim sirasi burada
-      gorunur.</div>`;
-    return;
-  }
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  p.bloklar.forEach(b => {
-    x0 = Math.min(x0, b.bbox[0]); y0 = Math.min(y0, b.bbox[1]);
-    x1 = Math.max(x1, b.bbox[2]); y1 = Math.max(y1, b.bbox[3]);
-  });
-  // Is sifiri (X0 Y0) her zaman gorunsun: parcanin sifira gore NEREDE
-  // durdugu, kesim alaninin kendisi kadar onemlidir.
-  x0 = Math.min(x0, 0); y0 = Math.min(y0, 0);
-  x1 = Math.max(x1, 0); y1 = Math.max(y1, 0);
-  const pay = Math.max((x1 - x0), (y1 - y0)) * 0.08 + 2;
-  x0 -= pay; y0 -= pay; x1 += pay; y1 += pay;
-  S.gorunumler = S.gorunumler || {};
-  if (!S.gorunumler[kapSecici] || S.gorunumler[kapSecici].ad !== p.ad)
-    S.gorunumler[kapSecici] = { ad: p.ad, x: x0, y: y0,
-                                g: x1 - x0, y2: y1 - y0 };
-  S.gorunum = S.gorunumler[kapSecici];
-
-  const secili = p.secili_blok;
-  const numara = $("#numaraGoster").checked;
-  const tasima = $("#tasimaGoster").checked;
-
-  const yollar = p.bloklar.map(b => {
-    const sinif = b.id === secili ? "secili" : (b.id > secili ? "aktif" : "");
-    return `<path class="yol-kesim ${sinif}" d="${b.komut}"/>`;
-  }).join("");
-
-  let tasimaYolu = "";
-  if (tasima) {
-    for (let i = 1; i < p.bloklar.length; i++) {
-      const o = p.bloklar[i - 1], y = p.bloklar[i];
-      const ox = o.son ? o.son[0] : o.x, oy = o.son ? o.son[1] : o.y;
-      tasimaYolu += `<path class="yol-tasima" d="M${ox} ${oy} L${y.x} ${y.y}"/>`;
-    }
-  }
-
-  const g = S.gorunum;
-  const nb = () => g.y2 / 34;                  // gorunume gore yazi boyutu
-
-  /* Isaret katmani: blok noktalari/numaralari + kesim alani olculeri.
-     Yakinlastirmada yazi boyutu ve etiket konumlari degistigi icin tek
-     fonksiyondan uretilir ve zoom'da yeniden cizilir. */
-  const isaretKat = () => {
-    const b0 = nb();
-    const noktalar = p.bloklar.map(b =>
-      `<circle class="yol-nokta ${b.id === secili ? "secili" : ""}"
-         cx="${b.x}" cy="${-b.y}" r="${(b0 / 4).toFixed(2)}"/>`).join("");
-    const numaralar = numara ? p.bloklar.map(b =>
-      `<text class="yol-no ${b.id === secili ? "secili" : ""}"
-         x="${b.x + b0 * 0.4}" y="${-b.y - b0 * 0.4}">${b.no}</text>`
-    ).join("") : "";
-    /* Kesim alani kutusu + is sifiri isareti. Bu katmanin Y'si onceden
-       ters cevrilmis koordinat kullanir (yol katmani scale(1,-1) ile
-       cevriliyor), bu yuzden y yerine -y yazilir. */
-    const k = p.olcu && p.olcu.kesim;
-    const olcu = !k ? "" : `
-      <rect class="olcu-kutu" x="${k.x[0]}" y="${-k.y[1]}"
-            width="${Math.max(k.genislik, 0.001)}"
-            height="${Math.max(k.yukseklik, 0.001)}"/>
-      <text class="olcu-yazi" text-anchor="middle"
-            x="${(k.x[0] + k.x[1]) / 2}" y="${-k.y[1] - b0 * 0.45}"
-            >${k.genislik.toFixed(1)}</text>
-      <text class="olcu-yazi" x="${k.x[1] + b0 * 0.35}"
-            y="${-(k.y[0] + k.y[1]) / 2}">${k.yukseklik.toFixed(1)}</text>
-      <path class="olcu-sifir" d="M${-b0} 0 H${b0} M0 ${-b0} V${b0}"/>
-      <text class="olcu-yazi sifir" x="${b0 * 0.35}"
-            y="${b0 * 1.25}">X0 Y0</text>`;
-    return olcu + noktalar + numaralar;
-  };
-
-  kap.innerHTML = `
-    <svg viewBox="${g.x} ${-(g.y + g.y2)} ${g.g} ${g.y2}"
-         preserveAspectRatio="xMidYMid meet">
-      <g transform="scale(1,-1)">${yollar}${tasimaYolu}</g>
-      <g id="isaretKat" font-size="${nb().toFixed(2)}">${isaretKat()}</g>
-    </svg>`;
-
-  // tekerlek ile yakinlastir, surukleyerek kaydir
-  const svg = kap.querySelector("svg");
-  const uygula = () => {
-    svg.setAttribute("viewBox", `${g.x} ${-(g.y + g.y2)} ${g.g} ${g.y2}`);
-    const kat = svg.querySelector("#isaretKat");
-    if (kat) {
-      kat.setAttribute("font-size", nb().toFixed(2));
-      kat.innerHTML = isaretKat();
-    }
-  };
-  svg.onwheel = (e) => {
-    e.preventDefault();
-    const k = e.deltaY > 0 ? 1.12 : 0.89;
-    g.x += g.g * (1 - k) / 2; g.y += g.y2 * (1 - k) / 2;
-    g.g *= k; g.y2 *= k;
-    uygula();
-  };
-  let surukle = null;
-  svg.onpointerdown = (e) => { surukle = { x: e.clientX, y: e.clientY };
-                               svg.setPointerCapture(e.pointerId); };
-  svg.onpointermove = (e) => {
-    if (!surukle) return;
-    const o = svg.getBoundingClientRect();
-    g.x -= (e.clientX - surukle.x) * g.g / o.width;
-    g.y += (e.clientY - surukle.y) * g.y2 / o.height;
-    surukle = { x: e.clientX, y: e.clientY };
-    uygula();
-  };
-  svg.onpointerup = svg.onpointerleave = () => { surukle = null; };
-  svg.ondblclick = () => {
-    delete S.gorunumler[kapSecici];         // sigdirmaya don
-    onizlemeCiz(kapSecici);
-  };
-}
-$("#numaraGoster").onchange = () => { onizlemeCiz(); onizlemeCiz("#onizlemeMini"); };
-$("#tasimaGoster").onchange = () => { onizlemeCiz(); onizlemeCiz("#onizlemeMini"); };
+/* Takım yolu önizlemesi, vektör sırası ve kenar boşlukları: onizleme.js */
 
 /* ================================================================== */
 /* TEZGAH sayfasi - tek ekran (koordinat + G-Code + sira + sureler)     */

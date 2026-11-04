@@ -387,29 +387,6 @@ function gkodAnahtar(d) {
 }
 
 /* ================================================================== */
-/* Takım yolunda canlı konum                                           */
-/* ================================================================== */
-function canliIsaret(d) {
-  const svg = $("#onizlemeMini svg");
-  if (!svg) return;
-  const x = d.konum && d.konum.X, y = d.konum && d.konum.Y;
-  if (x == null || y == null) return;
-  let nokta = svg.querySelector("#canliNokta");
-  if (!nokta) {
-    nokta = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    nokta.id = "canliNokta";
-    nokta.innerHTML = `<circle r="1" class="canli-halka"/><path class="canli-arti"/>`;
-    svg.appendChild(nokta);
-  }
-  const g = (S.gorunumler || {})["#onizlemeMini"];
-  const r = g ? g.y2 / 55 : 3;
-  nokta.setAttribute("transform", `translate(${x} ${-y})`);
-  nokta.firstChild.setAttribute("r", r.toFixed(2));
-  nokta.lastChild.setAttribute("d", `M${-r * 2} 0H${r * 2}M0 ${-r * 2}V${r * 2}`);
-  nokta.lastChild.setAttribute("stroke-width", (r / 4).toFixed(2));
-}
-
-/* ================================================================== */
 /* Ana çizim                                                           */
 /* ================================================================== */
 function ekranCiz(d) {
@@ -480,7 +457,7 @@ function ekranCiz(d) {
   } else {
     gkodCiz(false);
   }
-  canliIsaret(d);
+  if (typeof ozDurum === "function") ozDurum(d);   // onizleme.js: sinir + canli konum
 }
 
 /* ================================================================== */
@@ -531,6 +508,25 @@ $("#jogDogrulaBtn").onclick = async () => {
 };
 
 /* ================================================================== */
+/* Önizleme paneli: aç/kapat, araçlar                                  */
+/* ================================================================== */
+function ozKatla(kapat) {
+  const kap = $("#m3Yol");
+  kap.classList.toggle("katli", kapat);
+  $("#ozKatla").textContent = kapat ? "▸" : "▾";
+  $("#ozKatla").setAttribute("aria-expanded", String(!kapat));
+  try { localStorage.setItem("m3_oz_katli", kapat ? "1" : "0"); } catch (e) { /* özel mod */ }
+  if (!kapat) setTimeout(ozGorunurYenile, 30);    // gizliyken çizilemez: şimdi çiz
+}
+$("#ozKatla").onclick = () => ozKatla(!$("#m3Yol").classList.contains("katli"));
+
+/* ================================================================== */
 /* Başlangıç                                                           */
 /* ================================================================== */
 $("#jogShift").classList.remove("aktif");
+new OzGorunum("#onizlemeMini", "#olcuSeritMini");
+new OzGorunum("#onizleme", "#olcuSerit");
+ozAraclariKur();
+let _katli = "0";
+try { _katli = localStorage.getItem("m3_oz_katli") || "0"; } catch (e) { /* */ }
+ozKatla(_katli === "1");

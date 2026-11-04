@@ -124,17 +124,26 @@
 
       <!-- ============ ORTA: takım yolu + G-Code ============ -->
       <div class="m3-orta">
-        <div class="m3-panel m3-yol">
+        <div class="m3-panel m3-yol" id="m3Yol">
           <div class="m3-baslik">
+            <button type="button" class="m3-katla" id="ozKatla" aria-expanded="true"
+                    title="Önizlemeyi aç / kapat">▾</button>
             <span id="tDosyaAd">Dosya yüklenmedi</span>
             <span class="sag">
+              <span class="oz-arac" data-oz="#onizlemeMini" data-tam="#m3Yol"
+                    data-cip="#ozCipMini" data-btn="m3-tus kucuk"></span>
               <button class="m3-tus kucuk" id="tGozat">Dosya aç…</button>
+              <button type="button" class="m3-tus kucuk oz-acil-tus" data-acil="1"
+                      title="Her şeyi durdur">ACİL DURDUR</button>
             </span>
           </div>
-          <div class="onizleme" id="onizlemeMini">
-            <div class="bos-mesaj">Dosya seçin; takım yolu ve kesim sırası burada görünür.</div>
+          <div class="oz-govde" id="ozGovde">
+            <div class="oz-katmanlar" id="ozCipMini" aria-label="Önizlemede gösterilecekler"></div>
+            <div class="onizleme" id="onizlemeMini">
+              <div class="bos-mesaj">Dosya seçin; takım yolu, vektör sırası ve kenar boşlukları burada görünür.</div>
+            </div>
+            <div class="olcu-serit" id="olcuSeritMini"></div>
           </div>
-          <div class="olcu-serit" id="olcuSeritMini"></div>
         </div>
 
         <div class="m3-altlar">
@@ -423,14 +432,17 @@
 
     <!-- sag: onizleme + calistirma -->
     <div class="prog-sag">
-      <div class="kart">
+      <div class="kart" id="ozProgramKart">
         <div class="kart-bas">
           <h2>Takım yolu</h2>
           <div class="kart-bas-sag">
-            <label class="mini-onay"><input type="checkbox" id="numaraGoster" checked> numara</label>
-            <label class="mini-onay"><input type="checkbox" id="tasimaGoster"> taşıma</label>
+            <span class="oz-arac" data-oz="#onizleme" data-tam="#ozProgramKart"
+                  data-cip="#ozCipProgram" data-btn="mini"></span>
+            <button type="button" class="mini oz-acil-tus" data-acil="1"
+                    title="Her şeyi durdur">ACİL DURDUR</button>
           </div>
         </div>
+        <div class="oz-katmanlar" id="ozCipProgram" aria-label="Önizlemede gösterilecekler"></div>
         <div class="onizleme" id="onizleme">
           <div class="bos-mesaj">Dosya seçin, kesim sırası burada görünür.</div>
         </div>
@@ -1025,6 +1037,7 @@
 <div class="bildirim-alan" id="bildirimAlan"></div>
 
 <script src="/app.js"></script>
+<script src="/onizleme.js"></script>
 <script src="/ekran.js"></script>
 <script src="/home.js"></script>
 </body>

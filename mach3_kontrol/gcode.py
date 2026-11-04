@@ -484,6 +484,184 @@ class Program:
             "birim": self.birim,
         }
 
+    # -- guvenli Z vektorleri ---------------------------------------------
+    def vektorler(self, guvenli_z=None):
+        """Guvenli Z'ye HER yukselisin kapattigi kesim parcalarini ("vektor")
+        sirayla listeler.
+
+        Bir vektor, takimin guvenli yuksekligin ALTINA indigi andan (dalis)
+        tekrar guvenli yuksekliğe ciktigi ana kadar olan yoldur; arada
+        yapilan butun hareketler (kesim, derinlikte bosta gidis, yaylar) o
+        vektore aittir. Vektorler dosyadaki sirayla numaralanir; bu, takimin
+        malzemede gercekte hangi sirayla gezdigidir. (Blok = "X-Y iceren G0
+        ile baslayan parca" kuralindan farklidir: bir blokta, ornegin kopruler
+        icin birden cok yukselis olabilir; her biri ayri vektordur.)
+
+        Guvenli Z once DOSYADAN bulunur (en cok kullanilan "yukari G0 Z"
+        hedefi); dosyada yoksa `guvenli_z` argumani, o da yoksa en yuksek Z.
+        Koordinatlar dosyanin kendi birimindedir (blok yollariyla ayni).
+
+        Doner: {"guvenli_z", "kaynak", "vektorler": [...], "uyari"}
+        """
+        if self.artimli:
+            return {"guvenli_z": None, "kaynak": None, "vektorler": [],
+                    "uyari": "G91 (artimli) iceren dosyada vektor siralamasi "
+                             "cikarilamaz."}
+        # -- 1) hareketleri topla (modal G90 mutlak)
+        x = y = None
+        z = None
+        g = 0.0
+        hareketler = []
+        for i, satir in enumerate(self.satirlar):
+            w = satir_kelimeleri(satir)
+            if not w:
+                continue
+            if "G" in w and w["G"] in (0.0, 1.0, 2.0, 3.0):
+                g = w["G"]
+            if not any(e in w for e in ("X", "Y", "Z")):
+                continue
+            nx = w.get("X", x if x is not None else 0.0)
+            ny = w.get("Y", y if y is not None else 0.0)
+            nz = w.get("Z", z)
+            if x is None:                      # ilk konum bilinmiyor: sabitle
+                x, y = nx, ny
+            if z is None:
+                z = nz if nz is not None else 0.0
+                if nz is None:
+                    nz = z
+            ark = None
+            if g in (2.0, 3.0) and ("I" in w or "J" in w or "R" in w):
+                ark = (w, g)
+            hareketler.append((i, g, x, y, z, nx, ny, nz, ark, "Z" in w))
+            x, y, z = nx, ny, nz
+        if not hareketler:
+            return {"guvenli_z": None, "kaynak": None, "vektorler": [],
+                    "uyari": "Dosyada hareket yok."}
+
+        # -- 2) guvenli Z
+        # (a) dosyanin ILK "G0 Z..." hedefi: program hep once buraya cikar
+        #     (kisa "kopru" yukselisleri guvenli Z sayilmaz).
+        # (b) yoksa en cok tekrarlanan (>=2) en yuksek G0 yukselis hedefi.
+        zs = None
+        for h in hareketler:
+            if h[1] != 0.0:
+                break                              # ilk kesimden sonrasi sayilmaz
+            if h[9]:
+                zs = round(h[7], 3)
+                break
+        kaynak = "dosya"
+        if zs is None:
+            yukselis = {}
+            for h in hareketler:
+                if h[1] == 0.0 and h[7] > h[4] + 1e-6:
+                    k = round(h[7], 3)
+                    yukselis[k] = yukselis.get(k, 0) + 1
+            tekrar = [k for k, n in yukselis.items() if n >= 2]
+            if tekrar:
+                zs = max(tekrar)
+            elif yukselis:
+                zs = max(yukselis)
+        if zs is not None:
+            pass
+        elif guvenli_z is not None:
+            zs, kaynak = float(guvenli_z), "ayar"
+        else:
+            zs, kaynak = max(h[7] for h in hareketler), "en_yuksek"
+        tol = 1e-3
+
+        def yukarida(zv):
+            return zv >= zs - tol
+
+        # -- 3) vektorleri kes
+        blok_baslari, ofs = [], len(self.header)
+        for b in self.bloklar:
+            blok_baslari.append(ofs)
+            ofs += len(b)
+
+        def blok_no(satir_i):
+            if not blok_baslari or satir_i < blok_baslari[0]:
+                return None
+            idx = 0
+            for k, bs in enumerate(blok_baslari):
+                if bs <= satir_i:
+                    idx = k
+                else:
+                    break
+            return idx if satir_i < ofs else None
+
+        def hareket_noktalari(h):
+            (_, _g, x0, y0, _z0, x1, y1, _z1, ark, _zw) = h
+            if ark:
+                w, gg = ark
+                return _yay_noktalari(x0, y0, x1, y1, w, gg, bolut=18)
+            return [(x1, y1)]
+
+        def hareket_uzunlugu(h):
+            (_, _g, x0, y0, z0, x1, y1, z1, ark, _zw) = h
+            if ark:
+                w, gg = ark
+                return yay_uzunlugu(x0, y0, x1, y1, z1 - z0, w, gg)
+            return math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2)
+
+        vektorler, cur = [], None
+
+        def baslat(h):
+            (i, _g, x0, y0, z0, x1, y1, z1, _a, _zw) = h
+            return {"bas": (x0, y0), "pts": [(x0, y0)], "uz": 0.0,
+                    "zmin": min(z0, z1), "satir_bas": i, "satir_son": i}
+
+        def ekle(v, h):
+            v["pts"] += hareket_noktalari(h)
+            v["uz"] += hareket_uzunlugu(h)
+            v["zmin"] = min(v["zmin"], h[4], h[7])
+            v["satir_son"] = h[0]
+
+        def bitir(v, son_xy):
+            pts = v["pts"]
+            xs = [q[0] for q in pts]
+            ys = [q[1] for q in pts]
+            yon = None
+            for q in pts[1:]:
+                dx, dy = q[0] - pts[0][0], q[1] - pts[0][1]
+                d = math.hypot(dx, dy)
+                if d > 1e-6:
+                    yon = [round(dx / d, 4), round(dy / d, 4)]
+                    break
+            vektorler.append({
+                "no": len(vektorler) + 1,
+                "bas": [round(v["bas"][0], 3), round(v["bas"][1], 3)],
+                "son": [round(son_xy[0], 3), round(son_xy[1], 3)],
+                "yon": yon,
+                "uzunluk": round(v["uz"], 2),
+                "z_min": round(v["zmin"], 3),
+                "bbox": [round(min(xs), 3), round(min(ys), 3),
+                         round(max(xs), 3), round(max(ys), 3)],
+                "satir_bas": v["satir_bas"] + 1,       # 1 tabanli dosya satiri
+                "satir_son": v["satir_son"] + 1,
+                "blok": blok_no(v["satir_bas"]),
+                "nokta": len(pts),
+            })
+
+        for h in hareketler:
+            (_i, _g, x0, y0, z0, x1, y1, z1, _a, _zw) = h
+            sonda_yukari = yukarida(z1)
+            if cur is None:
+                if not sonda_yukari:               # dalis (ya da asagida baslangic)
+                    cur = baslat(h)
+                    ekle(cur, h)
+            else:
+                if sonda_yukari:                   # guvenli Z'ye yukselis
+                    # yukselirken XY de degisiyorsa kesim, hareketin
+                    # BASLADIGI noktada bitmistir
+                    bitir(cur, (x0, y0) if (x1, y1) != (x0, y0) else (x1, y1))
+                    cur = None
+                else:
+                    ekle(cur, h)
+        if cur is not None:                        # dosya asagida bitti
+            bitir(cur, cur["pts"][-1])
+        return {"guvenli_z": round(zs, 3), "kaynak": kaynak,
+                "vektorler": vektorler, "uyari": ""}
+
     def satir_araligi(self, blok_index):
         """Blogun dosyadaki satir araligi (1'den baslayan, kapsayici)."""
         onceki = len(self.header) + sum(
